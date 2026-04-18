@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "development"
     DEBUG: bool = True
-    PROJECT_NAME: str = "VTON Fit Soft"
+    PROJECT_NAME: str = "TryClothes Backend"
     API_V1_PREFIX: str = "/api/v1"
 
     SECRET_KEY: str = "change-this-secret-key"

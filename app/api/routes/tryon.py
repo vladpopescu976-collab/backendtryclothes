@@ -19,6 +19,14 @@ router = APIRouter()
 
 @router.post("/warmup")
 def warmup_tryon() -> dict:
+    if settings.TRYON_PROVIDER == "fashn_api":
+        return {
+            "status": "ready",
+            "provider": settings.TRYON_PROVIDER,
+            "ready": bool(settings.FASHN_API_KEY.strip()),
+            "loading": False,
+            "detail": "FASHN runs remotely and does not require local warmup.",
+        }
     if settings.TRYON_PROVIDER != "catvton":
         return {
             "status": "unsupported",
@@ -32,6 +40,14 @@ def warmup_tryon() -> dict:
 
 @router.get("/warmup")
 def get_warmup_status() -> dict:
+    if settings.TRYON_PROVIDER == "fashn_api":
+        return {
+            "status": "ready" if settings.FASHN_API_KEY.strip() else "failed",
+            "provider": settings.TRYON_PROVIDER,
+            "ready": bool(settings.FASHN_API_KEY.strip()),
+            "loading": False,
+            "detail": None if settings.FASHN_API_KEY.strip() else "FASHN_API_KEY is not configured.",
+        }
     if settings.TRYON_PROVIDER != "catvton":
         return {
             "status": "unsupported",

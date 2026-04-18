@@ -2,13 +2,16 @@
 
 Creat de Vlad Popescu.
 
-Acest folder este versiunea pregătită pentru:
+Acest folder este backend-ul public pentru `TryClothes`, pregătit în primul rând pentru integrarea cu `FASHN AI`.
 
-- GitHub
-- RunPod Serverless Load Balancing
-- FastAPI + auth + email verification + stylist AI light + brands/fit + CatVTON warmup
+Acum repo-ul este optimizat pentru:
 
-Repo-ul acesta conține doar backendul. Aplicația iOS rămâne separată.
+- FastAPI
+- login / create account / email verification
+- stylist AI light
+- fit + brands
+- virtual try-on prin `FASHN API`
+- deploy simplu pe RunPod Serverless sau pe orice host CPU
 
 ## Ce pui pe GitHub
 
@@ -22,154 +25,206 @@ Nu urca:
 - `.venv`
 - `storage/`
 - baze de date locale
-- rezultate sau poze generate
+- imagini generate
 - cache-uri locale
-- weights mari
+- chei API
 
-CatVTON nu este inclus în repo. Docker build-ul îl clonează automat din:
+## Ce face backend-ul
 
-- `https://github.com/Zheng-Chong/CatVTON.git`
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/verify-email`
+- `POST /api/v1/auth/resend-verification`
+- `POST /api/v1/stylist/recommend`
+- `POST /api/v1/fit/predict`
+- `POST /api/v1/tryon/jobs`
+- `POST /api/v1/tryon/guest/jobs`
+- `GET /api/v1/tryon/jobs/{job_id}`
+- `GET /api/v1/tryon/jobs/{job_id}/result`
+- `GET /api/v1/health`
+- `GET /ping`
 
-și îl fixează la commitul:
+## Flow-ul corect pentru aplicație
 
-- `7818397f25613beedb3d861a34769f607cfcf3b1`
+1. aplicația face login sau guest login
+2. userul încarcă poza cu el
+3. userul încarcă poza cu haina
+4. aplicația trimite fișierele la backend
+5. backend-ul vorbește cu `FASHN AI`
+6. backend-ul salvează job-ul și rezultatul
+7. aplicația cere rezultatul final și îl afișează
 
-## Ce face repo-ul acesta
+Important:
 
-- pornește backendul pe `FastAPI`
-- expune `POST /api/v1/auth/register`
-- expune `POST /api/v1/auth/login`
-- expune `POST /api/v1/stylist/recommend`
-- expune `POST /api/v1/tryon/jobs`
-- expune `POST /api/v1/tryon/warmup`
-- expune `GET /api/v1/health`
-- expune `GET /ping` pentru health check RunPod
+- cheia `FASHN_API_KEY` stă doar pe backend
+- aplicația iOS nu trebuie să vorbească direct cu FASHN
 
-## Fișiere importante
+## Variabile obligatorii
 
-- `Dockerfile` - imaginea folosită de RunPod
-- `start-server.sh` - pornește `uvicorn` și setează cache-urile
-- `runpod.env.example` - valorile recomandate pentru RunPod
-- `.env.example` - varianta generală de configurare
-
-## Important pentru serverless
-
-Pentru `serverless`, login-ul și create account trebuie să folosească o bază de date externă, altfel poți pierde conturile la cold start.
-
-Recomandare simplă:
-
-- `Supabase Postgres`
-- sau `Neon Postgres`
-
-Pentru test pe un `GPU Pod` simplu, poți folosi și `SQLite`.
-
-## Variabile obligatorii în RunPod
-
-Folosește valorile din `runpod.env.example`.
-
-Minimul de care ai nevoie:
+Pentru FASHN-first deploy, folosește aceste valori:
 
 ```env
 APP_ENV=production
+DEBUG=false
+PROJECT_NAME=TryClothes Backend
+API_V1_PREFIX=/api/v1
+
 SECRET_KEY=replace-with-a-long-random-secret
 APP_PUBLIC_BASE_URL=https://your-runpod-endpoint-url
 DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
+
 EMAIL_DELIVERY_MODE=resend
 EMAIL_FROM=TryClothes <noreply@yourdomain.com>
+EMAIL_FROM_NAME=TryClothes
 RESEND_API_KEY=replace-with-your-resend-api-key
-TRYON_PROVIDER=catvton
-CATVTON_PROJECT_DIR=/opt/CatVTON
-CATVTON_PRELOAD_ON_STARTUP=false
+
+TRYON_PROVIDER=fashn_api
+FASHN_API_KEY=replace-with-your-fashn-api-key
+FASHN_BASE_URL=https://api.fashn.ai/v1
+FASHN_MODEL_NAME=tryon-v1.6
+FASHN_GARMENT_PHOTO_TYPE=flat-lay
+FASHN_OUTPUT_FORMAT=png
+FASHN_SEGMENTATION_FREE=true
+FASHN_MODERATION_LEVEL=permissive
+FASHN_RETURN_BASE64=true
+
 PORT=8000
 PORT_HEALTH=8000
 ```
 
-## De ce `CATVTON_PRELOAD_ON_STARTUP=false`
+Vezi și:
 
-Pentru serverless, vrem ca workerul să pornească mai repede.
+- `.env.example`
+- `runpod.env.example`
 
-Fluxul recomandat este:
+## Ce pui efectiv pe server
 
-1. userul intră în `Garderobe`
-2. aplicația cheamă `POST /api/v1/tryon/warmup`
-3. backendul începe să încarce modelul
-4. aplicația face poll la `GET /api/v1/tryon/warmup`
-5. când apare `ready`, userul poate genera rezultatul
+Ai nevoie doar de:
 
-Astfel, cold start-ul este ascuns cât timp userul alege pozele.
+- acest repo
+- o bază de date externă PostgreSQL
+- `RESEND_API_KEY`
+- `FASHN_API_KEY`
+- domeniul/email-ul verificat în Resend
 
-## Cum urci pe GitHub
+Nu ai nevoie de:
 
-Exemplu:
+- GPU pentru try-on
+- CatVTON
+- weights locale
+- Hugging Face cache pentru MVP-ul cu FASHN
 
-```bash
-cd "/Users/vladpopescu/Documents/New project/tryclothes-runpod-backend"
-git init
-git branch -M main
-git add .
-git commit -m "Prepare TryClothes backend for RunPod serverless"
-git remote add origin https://github.com/USERNAME/tryclothes-backend.git
-git push -u origin main
-```
+## Docker
 
-## Cum îl legi în RunPod
+Repo-ul are acum:
 
-În RunPod:
+- `Dockerfile` -> varianta recomandată pentru `FASHN AI`
+- `Dockerfile.catvton` -> păstrat pentru viitor, dacă revii la CatVTON
+
+Pentru RunPod + FASHN folosește:
+
+- `Dockerfile`
+
+## Deploy pe RunPod Serverless
+
+Recomandat pentru MVP cu FASHN:
 
 1. `Serverless`
 2. `Create new deployment`
 3. `Custom deployment`
 4. `Deploy from GitHub`
-5. selectezi repo-ul backend
+5. alegi repo-ul backend
 
 Setări recomandate:
 
-- endpoint type: `Load Balancing`
-- gpu: `RTX 4090` sau similar
+- endpoint type: `Load Balancer`
+- worker type: `CPU` dacă este disponibil
+- dacă nu ai CPU în acel flux, alege cel mai ieftin worker disponibil
 - active workers: `0`
 - max workers: `1`
-- flashboot: `on`
 - port: `8000`
 - health port: `8000`
 
 La environment variables:
 
 - copiezi din `runpod.env.example`
-- schimbi `APP_PUBLIC_BASE_URL` cu URL-ul final RunPod
-- schimbi `DATABASE_URL` cu Postgres-ul tău
-- schimbi `EMAIL_FROM` cu adresa verificată în Resend
+- schimbi `APP_PUBLIC_BASE_URL` cu URL-ul final
+- schimbi `DATABASE_URL`
 - pui `RESEND_API_KEY`
+- pui `FASHN_API_KEY`
 - pui `SECRET_KEY`
 
-## Verificare după deploy
+## Ce verifici după deploy
 
-1. health:
+### 1. Health
 
 ```bash
 curl -s https://URLUL-TAU/api/v1/health
 ```
 
-2. ping:
+Ar trebui să vezi ceva de genul:
+
+```json
+{
+  "status": "ok",
+  "tryon_provider": "fashn_api",
+  "tryon_ready": true,
+  "email_ready": true
+}
+```
+
+### 2. Ping
 
 ```bash
 curl -i https://URLUL-TAU/ping
 ```
 
-3. warmup:
+Trebuie să răspundă `200`.
 
-```bash
-curl -s -X POST https://URLUL-TAU/api/v1/tryon/warmup
-curl -s https://URLUL-TAU/api/v1/tryon/warmup
-```
-
-4. signup:
+### 3. Signup
 
 - creezi cont
-- verifici mailul
+- primești email
+- verifici contul
 - faci login
 
-## Notă importantă
+### 4. Try-on
 
-Repo-ul acesta este pregătit pentru deploy, dar serverless VTON cu CatVTON tot va avea un timp de încălzire la primul request după scale-to-zero.
+- trimiți `person_image`
+- trimiți `upper_garment_image`
+- optional `lower_garment_image`
+- backend-ul creează job-ul și întoarce rezultatul
 
-Warmup-ul din aplicație reduce problema, nu o elimină complet.
+## Endpoint-ul important pentru aplicație
+
+Din iOS, fluxul principal lovește:
+
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `GET /api/v1/me`
+- `PUT /api/v1/me/body-profile`
+- `POST /api/v1/stylist/recommend`
+- `POST /api/v1/fit/predict`
+- `POST /api/v1/tryon/jobs`
+- `GET /api/v1/tryon/jobs/{job_id}/result`
+
+## Notă despre warmup
+
+Pentru `FASHN AI`, `warmup` nu mai este necesar ca la CatVTON.
+
+Dar endpoint-urile:
+
+- `POST /api/v1/tryon/warmup`
+- `GET /api/v1/tryon/warmup`
+
+au fost păstrate și întorc `ready` pentru providerul `fashn_api`, ca aplicația să nu se rupă dacă deja folosește acel flow.
+
+## Ce mai rămâne pentru aplicația finală
+
+După deploy, mai ai de făcut:
+
+1. aplicația iOS să bată doar spre URL-ul backend-ului tău
+2. să scoatem din UI orice text de debug / server / MVP
+3. să salvăm istoricul probelor per user
+4. să legăm subscriptions
+5. să rafinăm UX-ul pentru timpii de așteptare și stările de rezultat

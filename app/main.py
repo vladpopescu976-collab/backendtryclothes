@@ -54,6 +54,9 @@ def root() -> dict:
 
 @app.get("/ping")
 def ping() -> Response:
+    if settings.TRYON_PROVIDER == "fashn_api" and not settings.FASHN_API_KEY.strip():
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     if settings.TRYON_PROVIDER != "catvton":
         return Response(status_code=status.HTTP_200_OK)
 

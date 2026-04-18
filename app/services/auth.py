@@ -5,7 +5,7 @@ import hashlib
 import secrets
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.email import send_password_reset_email, send_verification_email
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_PREFIX}/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_PREFIX}/auth/login", auto_error=False)
 
 
 def utc_now() -> datetime:
@@ -300,8 +300,24 @@ def _get_user_by_password_reset_token(db: Session, token: str) -> User:
     return user
 
 
+def _extract_bearer_token(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+
+    if trimmed.lower().startswith("bearer "):
+        token = trimmed[7:].strip()
+        return token or None
+
+    return trimmed
+
+
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme),
+    app_authorization: Optional[str] = Header(default=None, alias="X-TryClothes-Authorization"),
     db: Session = Depends(get_db),
 ) -> User:
     credentials_exception = HTTPException(
@@ -310,8 +326,12 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    resolved_token = _extract_bearer_token(app_authorization) or _extract_bearer_token(token)
+    if not resolved_token:
+        raise credentials_exception
+
     try:
-        payload = decode_token(token)
+        payload = decode_token(resolved_token)
     except ValueError as exc:
         raise credentials_exception from exc
 
