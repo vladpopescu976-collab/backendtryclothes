@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     AUTO_SEED_REFERENCE_DATA: bool = True
     TRYON_PROVIDER: str = "stub"
     TRYON_TIMEOUT_SECONDS: int = 180
-    TRYON_POLL_INTERVAL_SECONDS: int = 3
+    TRYON_POLL_INTERVAL_SECONDS: int = 2
     TRYON_NUM_INFERENCE_STEPS: int = 22
     TRYON_GUIDANCE_SCALE: float = 2.5
     TRYON_SEED: int = 42
@@ -51,10 +51,10 @@ class Settings(BaseSettings):
     FASHN_BASE_URL: str = "https://api.fashn.ai/v1"
     FASHN_MODEL_NAME: str = "tryon-v1.6"
     FASHN_GARMENT_PHOTO_TYPE: str = "flat-lay"
-    FASHN_OUTPUT_FORMAT: str = "png"
+    FASHN_OUTPUT_FORMAT: str = "jpeg"
     FASHN_SEGMENTATION_FREE: bool = True
     FASHN_MODERATION_LEVEL: str = "permissive"
-    FASHN_RETURN_BASE64: bool = True
+    FASHN_RETURN_BASE64: bool = False
 
     MODEL_COMMAND_TEMPLATE: str = ""
     MODEL_COMMAND_WORKDIR: str = ""

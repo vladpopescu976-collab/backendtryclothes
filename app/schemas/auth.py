@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field, model_validator, field_validator
 
 from app.schemas.common import UserRead
@@ -35,8 +37,8 @@ class LoginRequest(BaseModel):
 class SocialLoginRequest(BaseModel):
     provider: str = Field(min_length=3, max_length=32)
     provider_subject: str = Field(min_length=3, max_length=255)
-    email: EmailStr | None = None
-    display_name: str | None = Field(default=None, max_length=255)
+    email: Optional[EmailStr] = None
+    display_name: Optional[str] = Field(default=None, max_length=255)
 
     @field_validator("provider")
     @classmethod

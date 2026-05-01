@@ -4,6 +4,7 @@ import html
 import logging
 import smtplib
 from email.message import EmailMessage
+from typing import Optional
 
 import httpx
 
@@ -346,7 +347,7 @@ def verification_result_html(*, title: str, message: str, success: bool) -> str:
 """.strip()
 
 
-def password_reset_form_html(*, token: str, error_message: str | None = None, password_updated: bool = False) -> str:
+def password_reset_form_html(*, token: str, error_message: Optional[str] = None, password_updated: bool = False) -> str:
     escaped_token = html.escape(token)
     error_block = ""
     if error_message:

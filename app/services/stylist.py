@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Set, Union
 
 from sqlalchemy.orm import Session
 
@@ -593,7 +593,7 @@ def _context_text(payload: StylistRecommendationRequest) -> str:
     )
 
 
-def _detect_season(payload: StylistRecommendationRequest) -> str | None:
+def _detect_season(payload: StylistRecommendationRequest) -> Optional[str]:
     normalized = _normalize_phrase(_context_text(payload))
     for season in ("spring", "summer", "autumn", "winter"):
         if any(_phrase_in_text(normalized, _normalize_phrase(keyword)) for keyword in SEASON_KEYWORDS[season]):
@@ -601,7 +601,7 @@ def _detect_season(payload: StylistRecommendationRequest) -> str | None:
     return None
 
 
-def _detect_occasion(payload: StylistRecommendationRequest) -> str | None:
+def _detect_occasion(payload: StylistRecommendationRequest) -> Optional[str]:
     normalized = _normalize_phrase(_context_text(payload))
     for occasion in ("office", "evening", "event", "travel", "weekend", "gym"):
         if any(_phrase_in_text(normalized, _normalize_phrase(keyword)) for keyword in OCCASION_KEYWORDS[occasion]):
@@ -609,7 +609,7 @@ def _detect_occasion(payload: StylistRecommendationRequest) -> str | None:
     return None
 
 
-def _enrich_styles_for_context(detected_styles: Sequence[str], occasion: str | None, season: str | None) -> List[str]:
+def _enrich_styles_for_context(detected_styles: Sequence[str], occasion: Optional[str], season: Optional[str]) -> List[str]:
     enriched = list(detected_styles) if detected_styles else DEFAULT_STYLE_ORDER.copy()
 
     for style in OCCASION_STYLE_HINTS.get(occasion or "", []):
@@ -754,8 +754,8 @@ def _build_search_queries(
     user: User,
     fit_terms: Dict[str, List[str]],
     detected_styles: Sequence[str],
-    occasion: str | None,
-    season: str | None,
+    occasion: Optional[str],
+    season: Optional[str],
     language: str,
 ) -> List[str]:
     queries: List[str] = []
@@ -802,8 +802,8 @@ def _build_outfit_ideas(
     colors: Sequence[str],
     detected_styles: Sequence[str],
     fit_terms: Dict[str, List[str]],
-    occasion: str | None,
-    season: str | None,
+    occasion: Optional[str],
+    season: Optional[str],
     language: str,
 ) -> List[StylistOutfitIdea]:
     primary_brand = brands[0].name if brands else "TryClothes"
@@ -914,7 +914,7 @@ def _ordered_outfit_ideas(ideas: Sequence[StylistOutfitIdea]) -> List[StylistOut
     return ordered[:4]
 
 
-def _context_idea_title(occasion: str | None, season: str | None, language: str) -> str:
+def _context_idea_title(occasion: Optional[str], season: Optional[str], language: str) -> str:
     if occasion == "office":
         return "Office rafinat" if language == "ro" else "Refined office option"
     if occasion == "evening":
@@ -932,7 +932,7 @@ def _context_idea_title(occasion: str | None, season: str | None, language: str)
     return "A doua direcție utilă" if language == "ro" else "Extra useful direction"
 
 
-def _context_idea_summary(lead_style: str, occasion: str | None, season: str | None, language: str) -> str:
+def _context_idea_summary(lead_style: str, occasion: Optional[str], season: Optional[str], language: str) -> str:
     style_label = _style_label(lead_style, language)
 
     if language == "ro":
@@ -969,7 +969,7 @@ def _context_idea_summary(lead_style: str, occasion: str | None, season: str | N
     return f"This variation keeps the {style_label} direction but makes it easier to repeat in everyday wear."
 
 
-def _occasion_support_piece(occasion: str | None, language: str) -> str:
+def _occasion_support_piece(occasion: Optional[str], language: str) -> str:
     if occasion == "office":
         return "Pantofi curați și layer structurat" if language == "ro" else "Clean shoes and a structured layer"
     if occasion == "evening":
@@ -983,7 +983,7 @@ def _occasion_support_piece(occasion: str | None, language: str) -> str:
     return "Sneakers curați sau pantofi low-profile" if language == "ro" else "Clean sneakers or low-profile shoes"
 
 
-def _season_support_piece(season: str | None, language: str) -> str:
+def _season_support_piece(season: Optional[str], language: str) -> str:
     if season == "winter":
         return "Palton scurt, bomber sau layer gros neutru" if language == "ro" else "A short coat, bomber, or heavier neutral layer"
     if season == "autumn":
@@ -1001,8 +1001,8 @@ def _build_fit_notes(
     colors: Sequence[str],
     detected_styles: Sequence[str],
     fit_terms: Dict[str, List[str]],
-    occasion: str | None,
-    season: str | None,
+    occasion: Optional[str],
+    season: Optional[str],
     language: str,
 ) -> tuple[List[str], List[str]]:
     profile = user.body_profile
@@ -1065,8 +1065,8 @@ def _build_fit_notes(
 def _build_context_notes(
     category_codes: Sequence[str],
     colors: Sequence[str],
-    occasion: str | None,
-    season: str | None,
+    occasion: Optional[str],
+    season: Optional[str],
     language: str,
 ) -> tuple[List[str], List[str]]:
     notes: List[str] = []
@@ -1332,8 +1332,8 @@ def _build_summary(
     colors: Sequence[str],
     has_sizes: bool,
     fit_terms: Dict[str, List[str]],
-    occasion: str | None,
-    season: str | None,
+    occasion: Optional[str],
+    season: Optional[str],
     language: str,
 ) -> str:
     brand_names = ", ".join(brand.name for brand in brands[:2]) or ("branduri disponibile" if language == "ro" else "available brands")
@@ -1521,7 +1521,7 @@ def _normalize_phrase(value: str) -> str:
     return " ".join(without_diacritics.replace("-", " ").replace("/", " ").split())
 
 
-def _canonical_color(value: str) -> str | None:
+def _canonical_color(value: str) -> Optional[str]:
     return COLOR_ALIASES.get(_normalize_phrase(value))
 
 
@@ -1529,7 +1529,7 @@ def _color_family(color: str) -> str:
     return COLOR_FAMILY_MAP.get(color.lower(), "accent")
 
 
-def _first_relevant_term(terms: Sequence[str], allowed_terms: Sequence[str] | set[str]) -> str | None:
+def _first_relevant_term(terms: Sequence[str], allowed_terms: Union[Sequence[str], Set[str]]) -> Optional[str]:
     allowed = set(allowed_terms)
     for term in terms:
         if term in allowed:
@@ -1567,7 +1567,7 @@ def _occasion_label(occasion: str, language: str) -> str:
     return OCCASION_LABELS.get(occasion, {}).get(language, occasion)
 
 
-def _summary_context_prefix(occasion: str | None, season: str | None, language: str) -> str:
+def _summary_context_prefix(occasion: Optional[str], season: Optional[str], language: str) -> str:
     if occasion and season:
         if language == "ro":
             return f"Pentru {_occasion_label(occasion, language)} în {_season_label(season, language)}, "

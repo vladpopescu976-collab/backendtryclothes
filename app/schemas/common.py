@@ -108,8 +108,46 @@ class TryOnJobRead(APIModel):
     lower_garment_asset_id: Optional[str]
     result_image_url: Optional[str]
     error_message: Optional[str]
+    performance: Optional["OperationPerformanceRead"] = None
     created_at: datetime
     updated_at: datetime
+
+
+class TryOnVideoRead(APIModel):
+    video_url: str
+    duration_seconds: int
+    resolution: str
+    provider: str
+    performance: Optional["OperationPerformanceRead"] = None
+
+
+class OperationPerformanceRead(APIModel):
+    upload_bytes: Optional[int] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+    read_ms: Optional[int] = None
+    decode_ms: Optional[int] = None
+    write_ms: Optional[int] = None
+    processing_ms: Optional[int] = None
+    finalize_ms: Optional[int] = None
+    provider_submit_ms: Optional[int] = None
+    provider_poll_ms: Optional[int] = None
+    response_ms: Optional[int] = None
+    download_ms: Optional[int] = None
+    total_ms: Optional[int] = None
+    poll_count: Optional[int] = None
+
+
+class TryOnVideoJobRead(APIModel):
+    id: str
+    status: str
+    status_message: Optional[str] = None
+    video_url: Optional[str] = None
+    error_message: Optional[str] = None
+    duration_seconds: int
+    resolution: str
+    provider: str
+    performance: Optional[OperationPerformanceRead] = None
 
 
 class BrandCandidate(APIModel):
