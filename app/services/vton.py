@@ -770,8 +770,6 @@ def _build_fashn_payload(
         payload["inputs"]["seed"] = settings.FASHN_SEED
     if settings.FASHN_NUM_SAMPLES > 0:
         payload["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
-    if prompt:
-        payload["inputs"]["prompt"] = prompt
     return payload
 
 
