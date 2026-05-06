@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-this-secret-key"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     ALLOWED_CORS_ORIGINS: List[str] = ["*"]
-    APP_PUBLIC_BASE_URL: str = "http://127.0.0.1:8000"
+    APP_PUBLIC_BASE_URL: str
 
-    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/vton_fit_soft"
+    DATABASE_URL: str
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
 
     EMAIL_DELIVERY_MODE: str = "console"
@@ -44,17 +44,24 @@ class Settings(BaseSettings):
     TRYON_NUM_INFERENCE_STEPS: int = 22
     TRYON_GUIDANCE_SCALE: float = 2.5
     TRYON_SEED: int = 42
-    TRYON_RESULT_FORMAT: str = "jpeg"
-    TRYON_RESULT_JPEG_QUALITY: int = 92
+    TRYON_RESULT_FORMAT: str = "png"
+    TRYON_RESULT_JPEG_QUALITY: int = 96
 
     FASHN_API_KEY: str = ""
     FASHN_BASE_URL: str = "https://api.fashn.ai/v1"
-    FASHN_MODEL_NAME: str = "tryon-v1.6"
+    FASHN_MODEL_NAME: str = "tryon-max"
     FASHN_GARMENT_PHOTO_TYPE: str = "flat-lay"
-    FASHN_OUTPUT_FORMAT: str = "jpeg"
+    FASHN_OUTPUT_FORMAT: str = "png"
     FASHN_SEGMENTATION_FREE: bool = True
     FASHN_MODERATION_LEVEL: str = "permissive"
     FASHN_RETURN_BASE64: bool = False
+    FASHN_MODE: str = "quality"
+    FASHN_GENERATION_MODE: str = "quality"
+    FASHN_RESOLUTION: str = "2k"
+    FASHN_SEED: int | None = None
+    FASHN_NUM_SAMPLES: int = 1
+    FASHN_REQUEST_TEMPLATE_JSON: str = ""
+    FASHN_DEBUG_SAVE_REQUESTS: bool = True
 
     MODEL_COMMAND_TEMPLATE: str = ""
     MODEL_COMMAND_WORKDIR: str = ""
@@ -74,8 +81,8 @@ class Settings(BaseSettings):
     CATVTON_FAIL_FAST: bool = False
     CATVTON_PRESERVE_ORIGINAL_RESOLUTION: bool = False
 
-    MAX_UPLOAD_SIZE_MB: int = 15
-    MAX_UPLOAD_SIZE_BYTES: int = 15 * 1024 * 1024
+    MAX_UPLOAD_SIZE_MB: int = 25
+    MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024
     ALLOWED_IMAGE_MIME_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp"]
 
     @property
@@ -97,6 +104,10 @@ class Settings(BaseSettings):
     @property
     def tryon_result_dir(self) -> Path:
         return self.storage_dir / "results"
+
+    @property
+    def fashn_debug_dir(self) -> Path:
+        return self.storage_dir / "fashn_debug"
 
     @field_validator("TRYON_PROVIDER")
     @classmethod
@@ -154,5 +165,6 @@ for folder in (
     settings.person_upload_dir,
     settings.garment_upload_dir,
     settings.tryon_result_dir,
+    settings.fashn_debug_dir,
 ):
     folder.mkdir(parents=True, exist_ok=True)

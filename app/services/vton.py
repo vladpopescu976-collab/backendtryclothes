@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import mimetypes
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -18,6 +21,8 @@ from app.core.config import settings
 from app.models.garment_asset import GarmentAsset
 from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -234,8 +239,10 @@ def _run_fashn_two_pass(
         current_image_path = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(upper_asset.image_url),
-            category="tops",
+            category=_fashn_category(upper_asset, "tops"),
             output_path=settings.tryon_result_dir / f"{job.id}_upper_pass.{settings.FASHN_OUTPUT_FORMAT}",
+            garment_photo_type=_fashn_garment_photo_type(upper_asset),
+            debug_label=f"{job.id}_upper_pass",
         )
 
     if lower_asset:
@@ -244,8 +251,10 @@ def _run_fashn_two_pass(
         current_image_path = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(lower_asset.image_url),
-            category="bottoms",
+            category=_fashn_category(lower_asset, "bottoms"),
             output_path=settings.tryon_result_dir / f"{job.id}_lower_pass.{settings.FASHN_OUTPUT_FORMAT}",
+            garment_photo_type=_fashn_garment_photo_type(lower_asset),
+            debug_label=f"{job.id}_lower_pass",
         )
 
     final_path = settings.tryon_result_dir / _result_filename(job.id)
@@ -314,27 +323,51 @@ def _run_catvton_two_pass(
     return _finalize_result_file(current_image_path, final_path)
 
 
-def _run_fashn_pass(model_image_path: Path, garment_image_path: Path, category: str, output_path: Path) -> Path:
+def _run_fashn_pass(
+    model_image_path: Path,
+    garment_image_path: Path,
+    category: str,
+    output_path: Path,
+    garment_photo_type: str,
+    debug_label: str,
+) -> Path:
     headers = {
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model_name": settings.FASHN_MODEL_NAME,
-        "inputs": {
-            "model_image": _image_to_data_url(model_image_path),
-            "garment_image": _image_to_data_url(garment_image_path),
-            "category": category,
-            "garment_photo_type": settings.FASHN_GARMENT_PHOTO_TYPE,
-            "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
-            "moderation_level": settings.FASHN_MODERATION_LEVEL,
-            "mode": "performance",
-            "seed": 42,
-            "num_samples": 1,
-            "output_format": "jpeg",
-            "return_base64": False,
-        },
-    }
+    payload = _build_fashn_payload(
+        model_image_path=model_image_path,
+        garment_image_path=garment_image_path,
+        category=category,
+        garment_photo_type=garment_photo_type,
+    )
+    debug_directory = _persist_fashn_debug_request(
+        debug_label=debug_label,
+        model_image_path=model_image_path,
+        garment_image_path=garment_image_path,
+        payload=payload,
+    )
+    model_metadata = _image_metadata(model_image_path)
+    garment_metadata = _image_metadata(garment_image_path)
+    logger.info(
+        "fashn-request label=%s model_name=%s category=%s garment_photo_type=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        debug_label,
+        settings.FASHN_MODEL_NAME,
+        category,
+        garment_photo_type,
+        settings.FASHN_MODE,
+        payload.get("inputs", {}).get("generation_mode"),
+        payload.get("inputs", {}).get("resolution"),
+        settings.FASHN_OUTPUT_FORMAT,
+        settings.FASHN_SEGMENTATION_FREE,
+        settings.FASHN_RETURN_BASE64,
+        model_metadata["width"],
+        model_metadata["height"],
+        model_metadata["bytes"],
+        garment_metadata["width"],
+        garment_metadata["height"],
+        garment_metadata["bytes"],
+    )
 
     with httpx.Client(timeout=settings.TRYON_TIMEOUT_SECONDS) as client:
         response = client.post(f"{settings.FASHN_BASE_URL}/run", headers=headers, json=payload)
@@ -342,6 +375,9 @@ def _run_fashn_pass(model_image_path: Path, garment_image_path: Path, category: 
         prediction_id = response.json().get("id")
         if not prediction_id:
             raise RuntimeError(f"FASHN did not return a prediction id: {response.text[:1000]}")
+        if debug_directory is not None:
+            _write_json(debug_directory / "submit_response.json", response.json())
+            (debug_directory / "prediction_id.txt").write_text(prediction_id, encoding="utf-8")
 
         deadline = time.monotonic() + settings.TRYON_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -353,9 +389,21 @@ def _run_fashn_pass(model_image_path: Path, garment_image_path: Path, category: 
                 outputs = payload.get("output") or []
                 if not outputs:
                     raise RuntimeError("FASHN prediction completed without output.")
+                if debug_directory is not None:
+                    _write_json(debug_directory / "status_completed.json", payload)
+                    (debug_directory / "output_reference.txt").write_text(str(outputs[0]), encoding="utf-8")
                 _persist_output(outputs[0], output_path)
+                if debug_directory is not None:
+                    provider_output_path = debug_directory / f"provider_output{output_path.suffix.lower() or '.img'}"
+                    shutil.copyfile(output_path, provider_output_path)
+                    _write_json(
+                        debug_directory / "provider_output_metadata.json",
+                        _image_metadata(output_path),
+                    )
                 return output_path
             if status_value == "failed":
+                if debug_directory is not None:
+                    _write_json(debug_directory / "status_failed.json", payload)
                 error_payload = payload.get("error") or {}
                 raise RuntimeError(
                     f"FASHN prediction failed: {error_payload.get('name', 'UnknownError')} - {error_payload.get('message', 'No details')}"
@@ -451,12 +499,15 @@ def _finalize_result_file(source_path: Path, final_path: Path) -> Path:
         final_path.unlink()
 
     result_format = settings.TRYON_RESULT_FORMAT.strip().lower()
-    if result_format == "png":
+    if _matches_target_format(source_path, result_format):
         if source_path != final_path:
-            final_path.write_bytes(source_path.read_bytes())
+            shutil.copyfile(source_path, final_path)
         return final_path
 
     with Image.open(source_path) as source_image:
+        if result_format == "png":
+            source_image.save(final_path, format="PNG")
+            return final_path
         image = source_image.convert("RGB")
         if result_format == "webp":
             image.save(final_path, format="WEBP", quality=settings.TRYON_RESULT_JPEG_QUALITY, method=6)
@@ -478,6 +529,90 @@ def _image_to_data_url(path: Path) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def _persist_fashn_debug_request(
+    *,
+    debug_label: str,
+    model_image_path: Path,
+    garment_image_path: Path,
+    payload: dict,
+) -> Optional[Path]:
+    if not settings.FASHN_DEBUG_SAVE_REQUESTS:
+        return None
+
+    try:
+        directory = settings.fashn_debug_dir / _sanitize_debug_label(debug_label)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        model_copy_path = directory / f"model_input{model_image_path.suffix.lower() or '.img'}"
+        garment_copy_path = directory / f"garment_input{garment_image_path.suffix.lower() or '.img'}"
+        shutil.copyfile(model_image_path, model_copy_path)
+        shutil.copyfile(garment_image_path, garment_copy_path)
+        _write_json(directory / "request_payload.json", payload)
+        _write_json(
+            directory / "request_metadata.json",
+            {
+                "model_image": _image_metadata(model_image_path),
+                "garment_image": _image_metadata(garment_image_path),
+                "payload_summary": {
+                    "model_name": payload.get("model_name"),
+                    "category": payload.get("inputs", {}).get("category"),
+                    "garment_photo_type": payload.get("inputs", {}).get("garment_photo_type"),
+                    "mode": payload.get("inputs", {}).get("mode"),
+                    "generation_mode": payload.get("inputs", {}).get("generation_mode"),
+                    "resolution": payload.get("inputs", {}).get("resolution"),
+                    "output_format": payload.get("inputs", {}).get("output_format"),
+                    "segmentation_free": payload.get("inputs", {}).get("segmentation_free"),
+                    "moderation_level": payload.get("inputs", {}).get("moderation_level"),
+                    "return_base64": payload.get("inputs", {}).get("return_base64"),
+                    "seed": payload.get("inputs", {}).get("seed"),
+                    "num_samples": payload.get("inputs", {}).get("num_samples"),
+                    "num_images": payload.get("inputs", {}).get("num_images"),
+                },
+            },
+        )
+        return directory
+    except Exception as exc:  # pragma: no cover - debug fallback
+        logger.warning("Failed to persist FASHN debug bundle for %s: %s", debug_label, exc)
+        return None
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _image_metadata(path: Path) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "format": (mimetypes.guess_type(path.name)[0] or "").lower(),
+    }
+    with Image.open(path) as image:
+        metadata.update(
+            {
+                "width": image.width,
+                "height": image.height,
+                "pil_format": image.format,
+                "mode": image.mode,
+            }
+        )
+    return metadata
+
+
+def _sanitize_debug_label(label: str) -> str:
+    return "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in label)
+
+
+def _matches_target_format(source_path: Path, result_format: str) -> bool:
+    suffix = source_path.suffix.lower()
+    if result_format == "png":
+        return suffix == ".png"
+    if result_format in {"jpg", "jpeg"}:
+        return suffix in {".jpg", ".jpeg"}
+    if result_format == "webp":
+        return suffix == ".webp"
+    return False
+
+
 def _get_asset(db: Session, asset_id: Optional[str]) -> Optional[GarmentAsset]:
     if not asset_id:
         return None
@@ -488,3 +623,124 @@ def _command_category(asset: GarmentAsset, fallback: str) -> str:
     if asset.category and asset.category.code:
         return asset.category.code
     return fallback
+
+
+def _fashn_category(asset: GarmentAsset, fallback: str) -> str:
+    if asset.category and asset.category.code:
+        normalized = asset.category.code.strip().lower()
+        mapping = {
+            "top": "tops",
+            "tops": "tops",
+            "tshirt": "tops",
+            "tee": "tops",
+            "shirt": "tops",
+            "hoodie": "tops",
+            "blouse": "tops",
+            "sweater": "tops",
+            "jacket": "tops",
+            "coat": "tops",
+            "bottom": "bottoms",
+            "bottoms": "bottoms",
+            "pants": "bottoms",
+            "trousers": "bottoms",
+            "jeans": "bottoms",
+            "skirt": "bottoms",
+            "shorts": "bottoms",
+            "dress": "one-pieces",
+            "jumpsuit": "one-pieces",
+            "one-piece": "one-pieces",
+            "one_pieces": "one-pieces",
+            "one-pieces": "one-pieces",
+        }
+        if normalized in mapping:
+            return mapping[normalized]
+    return fallback
+
+
+def _fashn_garment_photo_type(asset: GarmentAsset) -> str:
+    _ = asset
+    return settings.FASHN_GARMENT_PHOTO_TYPE
+
+
+def _build_fashn_payload(
+    *,
+    model_image_path: Path,
+    garment_image_path: Path,
+    category: str,
+    garment_photo_type: str,
+) -> dict:
+    template = settings.FASHN_REQUEST_TEMPLATE_JSON.strip()
+    replacements = {
+        "{{MODEL_IMAGE}}": _image_to_data_url(model_image_path),
+        "{{GARMENT_IMAGE}}": _image_to_data_url(garment_image_path),
+        "{{PRODUCT_IMAGE}}": _image_to_data_url(garment_image_path),
+        "{{CATEGORY}}": category,
+        "{{GARMENT_PHOTO_TYPE}}": garment_photo_type,
+        "{{OUTPUT_FORMAT}}": settings.FASHN_OUTPUT_FORMAT,
+        "{{RETURN_BASE64}}": settings.FASHN_RETURN_BASE64,
+        "{{MODEL_NAME}}": settings.FASHN_MODEL_NAME,
+        "{{GENERATION_MODE}}": settings.FASHN_GENERATION_MODE,
+        "{{RESOLUTION}}": settings.FASHN_RESOLUTION,
+    }
+
+    if template:
+        payload = json.loads(template)
+        return _replace_fashn_template_placeholders(payload, replacements)
+
+    model_name = settings.FASHN_MODEL_NAME.strip()
+    normalized_model_name = model_name.lower()
+    if normalized_model_name in {"tryon-max", "try-on-max", "product-to-model"}:
+        payload = {
+            "model_name": model_name,
+            "inputs": {
+                "model_image": replacements["{{MODEL_IMAGE}}"],
+                "product_image": replacements["{{PRODUCT_IMAGE}}"],
+                "output_format": settings.FASHN_OUTPUT_FORMAT,
+                "return_base64": settings.FASHN_RETURN_BASE64,
+            },
+        }
+        if settings.FASHN_GENERATION_MODE.strip():
+            payload["inputs"]["generation_mode"] = settings.FASHN_GENERATION_MODE.strip()
+        if settings.FASHN_RESOLUTION.strip():
+            payload["inputs"]["resolution"] = settings.FASHN_RESOLUTION.strip()
+        if settings.FASHN_SEED is not None:
+            payload["inputs"]["seed"] = settings.FASHN_SEED
+        if settings.FASHN_NUM_SAMPLES > 0:
+            payload["inputs"]["num_images"] = settings.FASHN_NUM_SAMPLES
+        return payload
+
+    payload = {
+        "model_name": model_name,
+        "inputs": {
+            "model_image": replacements["{{MODEL_IMAGE}}"],
+            "garment_image": replacements["{{GARMENT_IMAGE}}"],
+            "category": category,
+            "garment_photo_type": garment_photo_type,
+            "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
+            "moderation_level": settings.FASHN_MODERATION_LEVEL,
+            "mode": settings.FASHN_MODE,
+            "output_format": settings.FASHN_OUTPUT_FORMAT,
+            "return_base64": settings.FASHN_RETURN_BASE64,
+        },
+    }
+    if settings.FASHN_SEED is not None:
+        payload["inputs"]["seed"] = settings.FASHN_SEED
+    if settings.FASHN_NUM_SAMPLES > 0:
+        payload["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
+    return payload
+
+
+def _replace_fashn_template_placeholders(payload: object, replacements: dict[str, object]) -> object:
+    if isinstance(payload, dict):
+        return {key: _replace_fashn_template_placeholders(value, replacements) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_replace_fashn_template_placeholders(item, replacements) for item in payload]
+    if isinstance(payload, str):
+        if payload in replacements:
+            return replacements[payload]
+        result = payload
+        for key, replacement in replacements.items():
+            replacement_text = replacement if isinstance(replacement, str) else json.dumps(replacement)
+            result = result.replace(key, replacement_text)
+        return result
+    return payload

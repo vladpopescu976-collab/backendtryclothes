@@ -19,10 +19,13 @@ BRAND_DEFINITIONS = [
 ]
 
 CATEGORY_DEFINITIONS = [
+    {"code": "top", "name": "Top"},
     {"code": "tshirt", "name": "T-Shirt"},
     {"code": "hoodie", "name": "Hoodie"},
     {"code": "pants", "name": "Pants"},
     {"code": "jeans", "name": "Jeans"},
+    {"code": "skirt", "name": "Skirt"},
+    {"code": "dress", "name": "Dress"},
 ]
 
 UPPER_TEMPLATE = [
@@ -80,8 +83,8 @@ def seed_reference_data(db: Session) -> None:
             db.add(chart)
             db.flush()
 
-            template = UPPER_TEMPLATE if category.code in {"tshirt", "hoodie"} else LOWER_TEMPLATE
-            delta = shift["upper"] if category.code in {"tshirt", "hoodie"} else shift["lower"]
+            template = UPPER_TEMPLATE if category.code in {"top", "tshirt", "hoodie", "dress"} else LOWER_TEMPLATE
+            delta = shift["upper"] if category.code in {"top", "tshirt", "hoodie", "dress"} else shift["lower"]
             for entry_data in _shift_template(template, delta):
                 chart.entries.append(BrandSizeChartEntry(**entry_data))
 
@@ -138,4 +141,3 @@ def _shift_template(template: List[Dict[str, float]], delta: float) -> List[Dict
         shifted["fit_note"] = "Seeded estimate. Replace with official chart when available."
         shifted_entries.append(shifted)
     return shifted_entries
-

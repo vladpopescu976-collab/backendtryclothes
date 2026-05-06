@@ -27,6 +27,8 @@ class SavedUploadInfo:
     upload_bytes: int
     image_width: Optional[int]
     image_height: Optional[int]
+    content_type: Optional[str]
+    original_filename: Optional[str]
     read_ms: int
     decode_ms: int
     write_ms: int
@@ -75,6 +77,8 @@ async def save_upload_file_with_metrics(upload: UploadFile, destination_dir: Pat
         upload_bytes=len(content),
         image_width=image_width,
         image_height=image_height,
+        content_type=upload.content_type,
+        original_filename=upload.filename,
         read_ms=read_ms,
         decode_ms=decode_ms,
         write_ms=write_ms,
@@ -91,6 +95,13 @@ def create_garment_asset(
     category = None
     if category_code:
         category = db.query(Category).filter(Category.code == category_code).first()
+        if not category:
+            category = Category(
+                code=category_code,
+                name=category_code.replace("-", " ").replace("_", " ").title(),
+            )
+            db.add(category)
+            db.flush()
 
     asset = GarmentAsset(
         user_id=user.id,

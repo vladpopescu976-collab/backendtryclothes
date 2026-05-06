@@ -99,6 +99,15 @@ async def _create_job_for_user(
     request_started = time.monotonic()
     person_upload = await save_upload_file_with_metrics(person_image, settings.person_upload_dir, "person")
     person_path = person_upload.path
+    logger.info(
+        "tryon-input role=person filename=%s type=%s bytes=%s size=%sx%s path=%s",
+        person_upload.original_filename,
+        person_upload.content_type,
+        person_upload.upload_bytes,
+        person_upload.image_width,
+        person_upload.image_height,
+        person_upload.path,
+    )
 
     upper_asset = None
     lower_asset = None
@@ -108,6 +117,16 @@ async def _create_job_for_user(
     write_ms = person_upload.write_ms
     if upper_garment_image:
         upper_upload = await save_upload_file_with_metrics(upper_garment_image, settings.garment_upload_dir, "upper")
+        logger.info(
+            "tryon-input role=upper filename=%s type=%s bytes=%s size=%sx%s category=%s path=%s",
+            upper_upload.original_filename,
+            upper_upload.content_type,
+            upper_upload.upload_bytes,
+            upper_upload.image_width,
+            upper_upload.image_height,
+            upper_category_code,
+            upper_upload.path,
+        )
         upload_bytes += upper_upload.upload_bytes
         read_ms += upper_upload.read_ms
         decode_ms += upper_upload.decode_ms
@@ -121,6 +140,16 @@ async def _create_job_for_user(
         )
     if lower_garment_image:
         lower_upload = await save_upload_file_with_metrics(lower_garment_image, settings.garment_upload_dir, "lower")
+        logger.info(
+            "tryon-input role=lower filename=%s type=%s bytes=%s size=%sx%s category=%s path=%s",
+            lower_upload.original_filename,
+            lower_upload.content_type,
+            lower_upload.upload_bytes,
+            lower_upload.image_width,
+            lower_upload.image_height,
+            lower_category_code,
+            lower_upload.path,
+        )
         upload_bytes += lower_upload.upload_bytes
         read_ms += lower_upload.read_ms
         decode_ms += lower_upload.decode_ms

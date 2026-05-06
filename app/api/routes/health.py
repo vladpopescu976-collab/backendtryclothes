@@ -28,7 +28,10 @@ def health_check() -> dict:
             "configured": tryon_ready,
             "model_name": settings.FASHN_MODEL_NAME,
             "garment_photo_type": settings.FASHN_GARMENT_PHOTO_TYPE,
+            "generation_mode": settings.FASHN_GENERATION_MODE,
+            "resolution": settings.FASHN_RESOLUTION,
             "output_format": settings.FASHN_OUTPUT_FORMAT,
+            "template_override_enabled": bool(settings.FASHN_REQUEST_TEMPLATE_JSON.strip()),
         }
     payload["tryon_ready"] = tryon_ready
     return payload
