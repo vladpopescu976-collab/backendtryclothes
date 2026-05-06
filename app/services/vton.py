@@ -22,6 +22,8 @@ from app.core.config import settings
 from app.models.garment_asset import GarmentAsset
 from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
+from app.services.garment_prompt_service import generate_premium_garment_prompt
+from app.services.tryon_routing import GenerationTier, resolve_tryon_routing
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,27 @@ MIN_FOREGROUND_RATIO = 0.08
 
 class InvalidTryOnImageError(ValueError):
     pass
+
+
+@dataclass
+class TryOnRoutingMetadata:
+    requested_generation_tier: str
+    final_generation_tier: str
+    fashn_model_used: str
+    credits_charged: int
+    openai_analysis_success: bool
+    fallback_used: bool
+    forced_premium: bool
+    premium_recommended: bool
+    category: str
+    fashn_job_id: str | None = None
+    generated_prompt: str | None = None
+
+
+@dataclass
+class TryOnProviderOutcome:
+    result_path: Path
+    metadata: TryOnRoutingMetadata | None = None
 
 
 @dataclass
@@ -81,7 +104,7 @@ class VideoGenerationOutcome:
 
 
 def run_tryon_job(db: Session, job: TryOnJob) -> TryOnJob:
-    processed_job, _ = run_tryon_job_with_metrics(db, job)
+    processed_job, _, _ = run_tryon_job_with_metrics(db, job)
     return processed_job
 
 
@@ -93,17 +116,19 @@ def run_tryon_job_with_metrics(
     lower_category_code: Optional[str] = None,
     upper_garment_photo_type: Optional[str] = None,
     lower_garment_photo_type: Optional[str] = None,
-) -> tuple[TryOnJob, OperationPerformance]:
+    generation_tier: Optional[str] = None,
+) -> tuple[TryOnJob, OperationPerformance, TryOnRoutingMetadata | None]:
     upper_asset = _get_asset(db, job.upper_garment_asset_id)
     lower_asset = _get_asset(db, job.lower_garment_asset_id)
     operation_started = time.monotonic()
     performance = OperationPerformance()
+    routing_metadata: TryOnRoutingMetadata | None = None
 
     try:
         if settings.TRYON_PROVIDER == "stub":
-            result_path = _run_stub(job, upper_asset, lower_asset, db)
+            provider_outcome = TryOnProviderOutcome(result_path=_run_stub(job, upper_asset, lower_asset, db))
         elif settings.TRYON_PROVIDER == "fashn_api":
-            result_path = _run_fashn_two_pass(
+            provider_outcome = _run_fashn_two_pass(
                 job,
                 upper_asset,
                 lower_asset,
@@ -112,24 +137,29 @@ def run_tryon_job_with_metrics(
                 lower_category_code=lower_category_code,
                 upper_garment_photo_type=upper_garment_photo_type,
                 lower_garment_photo_type=lower_garment_photo_type,
+                requested_generation_tier=generation_tier,
             )
         elif settings.TRYON_PROVIDER == "catvton":
-            result_path = _run_catvton_two_pass(
-                job,
-                upper_asset,
-                lower_asset,
-                db,
-                upper_category_code=upper_category_code,
-                lower_category_code=lower_category_code,
+            provider_outcome = TryOnProviderOutcome(
+                result_path=_run_catvton_two_pass(
+                    job,
+                    upper_asset,
+                    lower_asset,
+                    db,
+                    upper_category_code=upper_category_code,
+                    lower_category_code=lower_category_code,
+                )
             )
         elif settings.TRYON_PROVIDER == "command":
-            result_path = _run_command_two_pass(
-                job,
-                upper_asset,
-                lower_asset,
-                db,
-                upper_category_code=upper_category_code,
-                lower_category_code=lower_category_code,
+            provider_outcome = TryOnProviderOutcome(
+                result_path=_run_command_two_pass(
+                    job,
+                    upper_asset,
+                    lower_asset,
+                    db,
+                    upper_category_code=upper_category_code,
+                    lower_category_code=lower_category_code,
+                )
             )
         else:
             raise RuntimeError(f"Unsupported TRYON_PROVIDER: {settings.TRYON_PROVIDER}")
@@ -140,6 +170,9 @@ def run_tryon_job_with_metrics(
         db.refresh(job)
         raise
 
+    result_path = provider_outcome.result_path
+    routing_metadata = provider_outcome.metadata
+
     performance.processing_ms = int((time.monotonic() - operation_started) * 1000)
     finalize_started = time.monotonic()
     job.result_image_url = str(result_path)
@@ -149,7 +182,7 @@ def run_tryon_job_with_metrics(
     db.refresh(job)
     performance.finalize_ms = int((time.monotonic() - finalize_started) * 1000)
     performance.total_ms = int((time.monotonic() - operation_started) * 1000)
-    return job, performance
+    return job, performance, routing_metadata
 
 
 def generate_video_from_result_image(
@@ -277,39 +310,54 @@ def _run_fashn_two_pass(
     lower_category_code: Optional[str] = None,
     upper_garment_photo_type: Optional[str] = None,
     lower_garment_photo_type: Optional[str] = None,
-) -> Path:
+    requested_generation_tier: Optional[str] = None,
+) -> TryOnProviderOutcome:
     if not settings.FASHN_API_KEY:
         raise RuntimeError("FASHN_API_KEY is not configured.")
 
     current_image_path = Path(job.person_image_url)
+    collected_metadata: list[TryOnRoutingMetadata] = []
     if upper_asset:
         job.status = "processing_upper"
         db.commit()
         selected_upper_category_code = _selected_category_code(upper_category_code, upper_asset, "tshirt")
-        current_image_path = _run_fashn_pass(
+        upper_outcome = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(upper_asset.image_url),
             category_code=selected_upper_category_code,
             output_path=settings.tryon_result_dir / f"{job.id}_upper_pass.{settings.FASHN_OUTPUT_FORMAT}",
             garment_photo_type=_resolved_garment_photo_type(upper_garment_photo_type, upper_asset),
             debug_label=f"{job.id}_upper_pass",
+            requested_generation_tier=requested_generation_tier,
+            user_id=job.user_id,
         )
+        current_image_path = upper_outcome.result_path
+        if upper_outcome.metadata:
+            collected_metadata.append(upper_outcome.metadata)
 
     if lower_asset:
         job.status = "processing_lower"
         db.commit()
         selected_lower_category_code = _selected_category_code(lower_category_code, lower_asset, "pants")
-        current_image_path = _run_fashn_pass(
+        lower_outcome = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(lower_asset.image_url),
             category_code=selected_lower_category_code,
             output_path=settings.tryon_result_dir / f"{job.id}_lower_pass.{settings.FASHN_OUTPUT_FORMAT}",
             garment_photo_type=_resolved_garment_photo_type(lower_garment_photo_type, lower_asset),
             debug_label=f"{job.id}_lower_pass",
+            requested_generation_tier=requested_generation_tier,
+            user_id=job.user_id,
         )
+        current_image_path = lower_outcome.result_path
+        if lower_outcome.metadata:
+            collected_metadata.append(lower_outcome.metadata)
 
     final_path = settings.tryon_result_dir / _result_filename(job.id)
-    return _finalize_result_file(current_image_path, final_path)
+    return TryOnProviderOutcome(
+        result_path=_finalize_result_file(current_image_path, final_path),
+        metadata=_aggregate_routing_metadata(collected_metadata),
+    )
 
 
 def _run_command_two_pass(
@@ -387,30 +435,36 @@ def _run_fashn_pass(
     output_path: Path,
     garment_photo_type: str,
     debug_label: str,
-) -> Path:
+    requested_generation_tier: Optional[str],
+    user_id: str,
+) -> TryOnProviderOutcome:
     headers = {
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = _build_fashn_payload(
+    payload, routing_metadata = _build_fashn_payload(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         category_code=category_code,
         garment_photo_type=garment_photo_type,
+        requested_generation_tier=requested_generation_tier,
     )
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         payload=payload,
-        selected_category_code=category_code,
+        routing_metadata=routing_metadata,
         selected_garment_photo_type=garment_photo_type,
     )
     model_metadata = _image_metadata(model_image_path)
     garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        "fashn-request label=%s user_id=%s requested_generation_tier=%s final_generation_tier=%s model_name=%s selected_category_code=%s request_category=%s model=%sx%s/%sB garment=%sx%s/%sB",
         debug_label,
+        user_id,
+        routing_metadata.requested_generation_tier,
+        routing_metadata.final_generation_tier,
         payload["model_name"],
         category_code,
         payload.get("inputs", {}).get("category"),
@@ -428,9 +482,23 @@ def _run_fashn_pass(
         prediction_id = response.json().get("id")
         if not prediction_id:
             raise RuntimeError(f"FASHN did not return a prediction id: {response.text[:1000]}")
+        routing_metadata.fashn_job_id = prediction_id
         if debug_directory is not None:
             _write_json(debug_directory / "submit_response.json", response.json())
             (debug_directory / "prediction_id.txt").write_text(prediction_id, encoding="utf-8")
+        logger.info(
+            "tryon-routing-success user_id=%s category=%s requested_generation_tier=%s final_generation_tier=%s fashn_model_used=%s credits_charged=%s openai_analysis_success=%s fallback_used=%s fashn_job_id=%s created_at=%s",
+            user_id,
+            routing_metadata.category,
+            routing_metadata.requested_generation_tier,
+            routing_metadata.final_generation_tier,
+            routing_metadata.fashn_model_used,
+            routing_metadata.credits_charged,
+            routing_metadata.openai_analysis_success,
+            routing_metadata.fallback_used,
+            prediction_id,
+            int(time.time()),
+        )
 
         deadline = time.monotonic() + settings.TRYON_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -453,7 +521,7 @@ def _run_fashn_pass(
                         debug_directory / "provider_output_metadata.json",
                         _image_metadata(output_path),
                     )
-                return output_path
+                return TryOnProviderOutcome(result_path=output_path, metadata=routing_metadata)
             if status_value == "failed":
                 if debug_directory is not None:
                     _write_json(debug_directory / "status_failed.json", payload)
@@ -588,7 +656,7 @@ def _persist_fashn_debug_request(
     model_image_path: Path,
     garment_image_path: Path,
     payload: dict,
-    selected_category_code: str,
+    routing_metadata: TryOnRoutingMetadata,
     selected_garment_photo_type: str,
 ) -> Optional[Path]:
     if not settings.FASHN_DEBUG_SAVE_REQUESTS:
@@ -610,11 +678,23 @@ def _persist_fashn_debug_request(
                 "garment_image": _image_metadata(garment_image_path),
                 "payload_summary": {
                     "model_name": payload.get("model_name"),
-                    "selected_category_code": selected_category_code,
+                    "requested_generation_tier": routing_metadata.requested_generation_tier,
+                    "final_generation_tier": routing_metadata.final_generation_tier,
+                    "selected_category_code": routing_metadata.category,
                     "selected_garment_photo_type": selected_garment_photo_type,
                     "category": payload.get("inputs", {}).get("category"),
+                    "credits_charged": routing_metadata.credits_charged,
+                    "fashn_model_used": routing_metadata.fashn_model_used,
+                    "openai_analysis_success": routing_metadata.openai_analysis_success,
+                    "fallback_used": routing_metadata.fallback_used,
+                    "forced_premium": routing_metadata.forced_premium,
+                    "premium_recommended": routing_metadata.premium_recommended,
+                    "generated_prompt": routing_metadata.generated_prompt,
                     "seed": payload.get("inputs", {}).get("seed"),
                     "num_samples": payload.get("inputs", {}).get("num_samples"),
+                    "generation_mode": payload.get("inputs", {}).get("generation_mode"),
+                    "resolution": payload.get("inputs", {}).get("resolution"),
+                    "num_images": payload.get("inputs", {}).get("num_images"),
                 },
             },
         )
@@ -688,67 +768,98 @@ def _resolved_garment_photo_type(explicit_garment_photo_type: Optional[str], ass
     return settings.FASHN_GARMENT_PHOTO_TYPE
 
 
+def _aggregate_routing_metadata(metadata_items: list[TryOnRoutingMetadata]) -> TryOnRoutingMetadata | None:
+    if not metadata_items:
+        return None
+
+    first = metadata_items[0]
+    if len(metadata_items) == 1:
+        return first
+
+    return TryOnRoutingMetadata(
+        requested_generation_tier=first.requested_generation_tier,
+        final_generation_tier=GenerationTier.premium.value
+        if any(item.final_generation_tier == GenerationTier.premium.value for item in metadata_items)
+        else GenerationTier.standard.value,
+        fashn_model_used="multiple",
+        credits_charged=sum(item.credits_charged for item in metadata_items),
+        openai_analysis_success=all(item.openai_analysis_success for item in metadata_items if item.final_generation_tier == GenerationTier.premium.value),
+        fallback_used=any(item.fallback_used for item in metadata_items),
+        forced_premium=any(item.forced_premium for item in metadata_items),
+        premium_recommended=any(item.premium_recommended for item in metadata_items),
+        category="multiple",
+        fashn_job_id=metadata_items[-1].fashn_job_id,
+        generated_prompt=None,
+    )
+
+
 def _build_fashn_payload(
     *,
     model_image_path: Path,
     garment_image_path: Path,
     category_code: str,
     garment_photo_type: str,
-) -> dict:
+    requested_generation_tier: Optional[str],
+) -> tuple[dict, TryOnRoutingMetadata]:
     _ = garment_photo_type
-    mapped_category = map_category(category_code)
+    routing_decision = resolve_tryon_routing(
+        user_category=category_code,
+        requested_generation_tier=requested_generation_tier,
+    )
     model_image = _normalized_image_to_data_url(model_image_path)
     garment_image = _normalized_image_to_data_url(garment_image_path)
+    metadata = TryOnRoutingMetadata(
+        requested_generation_tier=routing_decision.requested_generation_tier.value,
+        final_generation_tier=routing_decision.final_generation_tier.value,
+        fashn_model_used=routing_decision.fashn_model_name,
+        credits_charged=routing_decision.credits_required,
+        openai_analysis_success=False,
+        fallback_used=False,
+        forced_premium=routing_decision.force_premium,
+        premium_recommended=routing_decision.premium_recommended,
+        category=routing_decision.user_category,
+    )
+
     payload = {
-        "model": "tryon-v1.6",
-        "category": mapped_category,
+        "model": routing_decision.fashn_model_name,
+        "category": routing_decision.standard_category,
         "model_image": model_image,
         "garment_image": garment_image,
     }
-    print("USER CATEGORY:", category_code)
-    print("MAPPED CATEGORY:", mapped_category)
+    print("USER CATEGORY:", routing_decision.user_category)
+    print("MAPPED CATEGORY:", payload["category"])
     print("MODEL:", payload["model"])
     print("CATEGORY:", payload["category"])
     print("MODEL IMAGE SIZE:", len(model_image))
     print("GARMENT IMAGE SIZE:", len(garment_image))
 
-    fashn_request = {
-        "model_name": payload["model"],
+    if routing_decision.final_generation_tier == GenerationTier.premium:
+        prompt_outcome = generate_premium_garment_prompt(garment_image, routing_decision.user_category)
+        metadata.openai_analysis_success = prompt_outcome.openai_analysis_success
+        metadata.fallback_used = prompt_outcome.fallback_used
+        metadata.generated_prompt = prompt_outcome.prompt
+        premium_payload = {
+            "model_name": routing_decision.fashn_model_name,
+            "inputs": {
+                "model_image": model_image,
+                "product_image": garment_image,
+                "prompt": prompt_outcome.prompt,
+                "resolution": "1k",
+                "generation_mode": "balanced",
+                "num_images": 1,
+            },
+        }
+        return premium_payload, metadata
+
+    standard_payload = {
+        "model_name": routing_decision.fashn_model_name,
         "inputs": {
-            "model_image": payload["model_image"],
-            "garment_image": payload["garment_image"],
-            "category": payload["category"],
+            "model_image": model_image,
+            "garment_image": garment_image,
+            "category": routing_decision.standard_category,
         },
     }
-    if settings.FASHN_SEED is not None:
-        fashn_request["inputs"]["seed"] = settings.FASHN_SEED
-    if settings.FASHN_NUM_SAMPLES > 0:
-        fashn_request["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
-    return fashn_request
-
-
-def map_category(user_category: str) -> str:
-    normalized = user_category.strip().lower()
-    mapping = {
-        "tricou": "upper_body",
-        "camasa": "upper_body",
-        "geaca": "upper_body",
-        "hanorac": "upper_body",
-        "blugi": "lower_body",
-        "pantaloni": "lower_body",
-        "fusta": "lower_body",
-        "rochie": "dress",
-        "tshirt": "upper_body",
-        "tee": "upper_body",
-        "shirt": "upper_body",
-        "jacket": "upper_body",
-        "hoodie": "upper_body",
-        "jeans": "lower_body",
-        "pants": "lower_body",
-        "skirt": "lower_body",
-        "dress": "dress",
-    }
-    return mapping.get(normalized, "upper_body")
+    return standard_payload, metadata
 
 
 def validate_image(image_base64: str) -> bool:

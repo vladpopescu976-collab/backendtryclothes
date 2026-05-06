@@ -95,6 +95,7 @@ async def _create_job_for_user(
     lower_category_code: Optional[str],
     upper_garment_photo_type: Optional[str],
     lower_garment_photo_type: Optional[str],
+    generation_tier: Optional[str],
 ) -> TryOnJobRead:
     if not upper_garment_image and not lower_garment_image:
         raise HTTPException(status_code=400, detail="At least one garment image is required.")
@@ -181,16 +182,33 @@ async def _create_job_for_user(
 
     job = create_tryon_job(db, current_user, person_path, upper_asset, lower_asset)
     try:
-        job, runtime_performance = run_tryon_job_with_metrics(
+        job, runtime_performance, routing_metadata = run_tryon_job_with_metrics(
             db,
             job,
             upper_category_code=upper_category_code,
             lower_category_code=lower_category_code,
             upper_garment_photo_type=upper_garment_photo_type,
             lower_garment_photo_type=lower_garment_photo_type,
+            generation_tier=generation_tier,
         )
     except InvalidTryOnImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPStatusError as exc:
+        response_text = exc.response.text[:1000] if exc.response is not None else ""
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"FASHN request failed with HTTP {exc.response.status_code if exc.response else 502}: {response_text}",
+        ) from exc
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     total_ms = int((time.monotonic() - request_started) * 1000)
     performance = OperationPerformanceRead(
         upload_bytes=upload_bytes,
@@ -215,7 +233,20 @@ async def _create_job_for_user(
         total_ms,
     )
     payload = TryOnJobRead.model_validate(job)
-    return payload.model_copy(update={"performance": performance})
+    return payload.model_copy(
+        update={
+            "performance": performance,
+            "requested_generation_tier": routing_metadata.requested_generation_tier if routing_metadata else None,
+            "final_generation_tier": routing_metadata.final_generation_tier if routing_metadata else None,
+            "fashn_model_used": routing_metadata.fashn_model_used if routing_metadata else None,
+            "credits_charged": routing_metadata.credits_charged if routing_metadata else None,
+            "openai_analysis_success": routing_metadata.openai_analysis_success if routing_metadata else None,
+            "fallback_used": routing_metadata.fallback_used if routing_metadata else None,
+            "forced_premium": routing_metadata.forced_premium if routing_metadata else None,
+            "premium_recommended": routing_metadata.premium_recommended if routing_metadata else None,
+            "fashn_job_id": routing_metadata.fashn_job_id if routing_metadata else None,
+        }
+    )
 
 
 async def _create_video_response(
@@ -300,6 +331,7 @@ async def create_job(
     lower_category_code: Optional[str] = Form(None),
     upper_garment_photo_type: Optional[str] = Form(None),
     lower_garment_photo_type: Optional[str] = Form(None),
+    generation_tier: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> TryOnJobRead:
@@ -316,6 +348,7 @@ async def create_job(
         lower_category_code=lower_category_code,
         upper_garment_photo_type=upper_garment_photo_type,
         lower_garment_photo_type=lower_garment_photo_type,
+        generation_tier=generation_tier,
     )
 
 
@@ -331,6 +364,7 @@ async def create_guest_job(
     lower_category_code: Optional[str] = Form(None),
     upper_garment_photo_type: Optional[str] = Form(None),
     lower_garment_photo_type: Optional[str] = Form(None),
+    generation_tier: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> TryOnJobRead:
     guest_user = get_or_create_guest_user(db)
@@ -347,6 +381,7 @@ async def create_guest_job(
         lower_category_code=lower_category_code,
         upper_garment_photo_type=upper_garment_photo_type,
         lower_garment_photo_type=lower_garment_photo_type,
+        generation_tier=generation_tier,
     )
 
 

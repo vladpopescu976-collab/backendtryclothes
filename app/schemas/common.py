@@ -108,6 +108,15 @@ class TryOnJobRead(APIModel):
     lower_garment_asset_id: Optional[str]
     result_image_url: Optional[str]
     error_message: Optional[str]
+    requested_generation_tier: Optional[str] = None
+    final_generation_tier: Optional[str] = None
+    fashn_model_used: Optional[str] = None
+    credits_charged: Optional[int] = None
+    openai_analysis_success: Optional[bool] = None
+    fallback_used: Optional[bool] = None
+    forced_premium: Optional[bool] = None
+    premium_recommended: Optional[bool] = None
+    fashn_job_id: Optional[str] = None
     performance: Optional["OperationPerformanceRead"] = None
     created_at: datetime
     updated_at: datetime
