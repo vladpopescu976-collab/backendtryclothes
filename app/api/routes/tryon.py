@@ -92,6 +92,8 @@ async def _create_job_for_user(
     lower_brand_id: Optional[str],
     upper_category_code: Optional[str],
     lower_category_code: Optional[str],
+    upper_garment_photo_type: Optional[str],
+    lower_garment_photo_type: Optional[str],
 ) -> TryOnJobRead:
     if not upper_garment_image and not lower_garment_image:
         raise HTTPException(status_code=400, detail="At least one garment image is required.")
@@ -118,13 +120,14 @@ async def _create_job_for_user(
     if upper_garment_image:
         upper_upload = await save_upload_file_with_metrics(upper_garment_image, settings.garment_upload_dir, "upper")
         logger.info(
-            "tryon-input role=upper filename=%s type=%s bytes=%s size=%sx%s category=%s path=%s",
+            "tryon-input role=upper filename=%s type=%s bytes=%s size=%sx%s category=%s garment_photo_type=%s path=%s",
             upper_upload.original_filename,
             upper_upload.content_type,
             upper_upload.upload_bytes,
             upper_upload.image_width,
             upper_upload.image_height,
             upper_category_code,
+            upper_garment_photo_type,
             upper_upload.path,
         )
         upload_bytes += upper_upload.upload_bytes
@@ -141,13 +144,14 @@ async def _create_job_for_user(
     if lower_garment_image:
         lower_upload = await save_upload_file_with_metrics(lower_garment_image, settings.garment_upload_dir, "lower")
         logger.info(
-            "tryon-input role=lower filename=%s type=%s bytes=%s size=%sx%s category=%s path=%s",
+            "tryon-input role=lower filename=%s type=%s bytes=%s size=%sx%s category=%s garment_photo_type=%s path=%s",
             lower_upload.original_filename,
             lower_upload.content_type,
             lower_upload.upload_bytes,
             lower_upload.image_width,
             lower_upload.image_height,
             lower_category_code,
+            lower_garment_photo_type,
             lower_upload.path,
         )
         upload_bytes += lower_upload.upload_bytes
@@ -165,7 +169,14 @@ async def _create_job_for_user(
     db.commit()
 
     job = create_tryon_job(db, current_user, person_path, upper_asset, lower_asset)
-    job, runtime_performance = run_tryon_job_with_metrics(db, job)
+    job, runtime_performance = run_tryon_job_with_metrics(
+        db,
+        job,
+        upper_category_code=upper_category_code,
+        lower_category_code=lower_category_code,
+        upper_garment_photo_type=upper_garment_photo_type,
+        lower_garment_photo_type=lower_garment_photo_type,
+    )
     total_ms = int((time.monotonic() - request_started) * 1000)
     performance = OperationPerformanceRead(
         upload_bytes=upload_bytes,
@@ -272,6 +283,8 @@ async def create_job(
     lower_brand_id: Optional[str] = Form(None),
     upper_category_code: Optional[str] = Form(None),
     lower_category_code: Optional[str] = Form(None),
+    upper_garment_photo_type: Optional[str] = Form(None),
+    lower_garment_photo_type: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> TryOnJobRead:
@@ -285,6 +298,8 @@ async def create_job(
         lower_brand_id=lower_brand_id,
         upper_category_code=upper_category_code,
         lower_category_code=lower_category_code,
+        upper_garment_photo_type=upper_garment_photo_type,
+        lower_garment_photo_type=lower_garment_photo_type,
     )
 
 
@@ -297,6 +312,8 @@ async def create_guest_job(
     lower_brand_id: Optional[str] = Form(None),
     upper_category_code: Optional[str] = Form(None),
     lower_category_code: Optional[str] = Form(None),
+    upper_garment_photo_type: Optional[str] = Form(None),
+    lower_garment_photo_type: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> TryOnJobRead:
     guest_user = get_or_create_guest_user(db)
@@ -310,6 +327,8 @@ async def create_guest_job(
         lower_brand_id=lower_brand_id,
         upper_category_code=upper_category_code,
         lower_category_code=lower_category_code,
+        upper_garment_photo_type=upper_garment_photo_type,
+        lower_garment_photo_type=lower_garment_photo_type,
     )
 
 

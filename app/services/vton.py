@@ -72,7 +72,15 @@ def run_tryon_job(db: Session, job: TryOnJob) -> TryOnJob:
     return processed_job
 
 
-def run_tryon_job_with_metrics(db: Session, job: TryOnJob) -> tuple[TryOnJob, OperationPerformance]:
+def run_tryon_job_with_metrics(
+    db: Session,
+    job: TryOnJob,
+    *,
+    upper_category_code: Optional[str] = None,
+    lower_category_code: Optional[str] = None,
+    upper_garment_photo_type: Optional[str] = None,
+    lower_garment_photo_type: Optional[str] = None,
+) -> tuple[TryOnJob, OperationPerformance]:
     upper_asset = _get_asset(db, job.upper_garment_asset_id)
     lower_asset = _get_asset(db, job.lower_garment_asset_id)
     operation_started = time.monotonic()
@@ -82,11 +90,34 @@ def run_tryon_job_with_metrics(db: Session, job: TryOnJob) -> tuple[TryOnJob, Op
         if settings.TRYON_PROVIDER == "stub":
             result_path = _run_stub(job, upper_asset, lower_asset, db)
         elif settings.TRYON_PROVIDER == "fashn_api":
-            result_path = _run_fashn_two_pass(job, upper_asset, lower_asset, db)
+            result_path = _run_fashn_two_pass(
+                job,
+                upper_asset,
+                lower_asset,
+                db,
+                upper_category_code=upper_category_code,
+                lower_category_code=lower_category_code,
+                upper_garment_photo_type=upper_garment_photo_type,
+                lower_garment_photo_type=lower_garment_photo_type,
+            )
         elif settings.TRYON_PROVIDER == "catvton":
-            result_path = _run_catvton_two_pass(job, upper_asset, lower_asset, db)
+            result_path = _run_catvton_two_pass(
+                job,
+                upper_asset,
+                lower_asset,
+                db,
+                upper_category_code=upper_category_code,
+                lower_category_code=lower_category_code,
+            )
         elif settings.TRYON_PROVIDER == "command":
-            result_path = _run_command_two_pass(job, upper_asset, lower_asset, db)
+            result_path = _run_command_two_pass(
+                job,
+                upper_asset,
+                lower_asset,
+                db,
+                upper_category_code=upper_category_code,
+                lower_category_code=lower_category_code,
+            )
         else:
             raise RuntimeError(f"Unsupported TRYON_PROVIDER: {settings.TRYON_PROVIDER}")
     except Exception as exc:
@@ -228,6 +259,11 @@ def _run_fashn_two_pass(
     upper_asset: Optional[GarmentAsset],
     lower_asset: Optional[GarmentAsset],
     db: Session,
+    *,
+    upper_category_code: Optional[str] = None,
+    lower_category_code: Optional[str] = None,
+    upper_garment_photo_type: Optional[str] = None,
+    lower_garment_photo_type: Optional[str] = None,
 ) -> Path:
     if not settings.FASHN_API_KEY:
         raise RuntimeError("FASHN_API_KEY is not configured.")
@@ -236,24 +272,26 @@ def _run_fashn_two_pass(
     if upper_asset:
         job.status = "processing_upper"
         db.commit()
+        selected_upper_category_code = _selected_category_code(upper_category_code, upper_asset, "tshirt")
         current_image_path = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(upper_asset.image_url),
-            category=_fashn_category(upper_asset, "tops"),
+            category_code=selected_upper_category_code,
             output_path=settings.tryon_result_dir / f"{job.id}_upper_pass.{settings.FASHN_OUTPUT_FORMAT}",
-            garment_photo_type=_fashn_garment_photo_type(upper_asset),
+            garment_photo_type=_resolved_garment_photo_type(upper_garment_photo_type, upper_asset),
             debug_label=f"{job.id}_upper_pass",
         )
 
     if lower_asset:
         job.status = "processing_lower"
         db.commit()
+        selected_lower_category_code = _selected_category_code(lower_category_code, lower_asset, "pants")
         current_image_path = _run_fashn_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(lower_asset.image_url),
-            category=_fashn_category(lower_asset, "bottoms"),
+            category_code=selected_lower_category_code,
             output_path=settings.tryon_result_dir / f"{job.id}_lower_pass.{settings.FASHN_OUTPUT_FORMAT}",
-            garment_photo_type=_fashn_garment_photo_type(lower_asset),
+            garment_photo_type=_resolved_garment_photo_type(lower_garment_photo_type, lower_asset),
             debug_label=f"{job.id}_lower_pass",
         )
 
@@ -266,6 +304,9 @@ def _run_command_two_pass(
     upper_asset: Optional[GarmentAsset],
     lower_asset: Optional[GarmentAsset],
     db: Session,
+    *,
+    upper_category_code: Optional[str] = None,
+    lower_category_code: Optional[str] = None,
 ) -> Path:
     current_image_path = Path(job.person_image_url)
     if upper_asset:
@@ -274,7 +315,7 @@ def _run_command_two_pass(
         current_image_path = _run_command_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(upper_asset.image_url),
-            category=_command_category(upper_asset, "tops"),
+            category=_selected_category_code(upper_category_code, upper_asset, "tops"),
             output_path=settings.tryon_result_dir / f"{job.id}_upper_pass.png",
         )
 
@@ -284,7 +325,7 @@ def _run_command_two_pass(
         current_image_path = _run_command_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(lower_asset.image_url),
-            category=_command_category(lower_asset, "bottoms"),
+            category=_selected_category_code(lower_category_code, lower_asset, "bottoms"),
             output_path=settings.tryon_result_dir / f"{job.id}_lower_pass.png",
         )
 
@@ -297,6 +338,9 @@ def _run_catvton_two_pass(
     upper_asset: Optional[GarmentAsset],
     lower_asset: Optional[GarmentAsset],
     db: Session,
+    *,
+    upper_category_code: Optional[str] = None,
+    lower_category_code: Optional[str] = None,
 ) -> Path:
     current_image_path = Path(job.person_image_url)
     if upper_asset:
@@ -305,7 +349,7 @@ def _run_catvton_two_pass(
         current_image_path = _run_catvton_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(upper_asset.image_url),
-            category=_command_category(upper_asset, "upper"),
+            category=_selected_category_code(upper_category_code, upper_asset, "upper"),
             output_path=settings.tryon_result_dir / f"{job.id}_upper_pass.png",
         )
 
@@ -315,7 +359,7 @@ def _run_catvton_two_pass(
         current_image_path = _run_catvton_pass(
             model_image_path=current_image_path,
             garment_image_path=Path(lower_asset.image_url),
-            category=_command_category(lower_asset, "lower"),
+            category=_selected_category_code(lower_category_code, lower_asset, "lower"),
             output_path=settings.tryon_result_dir / f"{job.id}_lower_pass.png",
         )
 
@@ -326,7 +370,7 @@ def _run_catvton_two_pass(
 def _run_fashn_pass(
     model_image_path: Path,
     garment_image_path: Path,
-    category: str,
+    category_code: str,
     output_path: Path,
     garment_photo_type: str,
     debug_label: str,
@@ -338,7 +382,7 @@ def _run_fashn_pass(
     payload = _build_fashn_payload(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
-        category=category,
+        category_code=category_code,
         garment_photo_type=garment_photo_type,
     )
     debug_directory = _persist_fashn_debug_request(
@@ -346,14 +390,17 @@ def _run_fashn_pass(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         payload=payload,
+        selected_category_code=category_code,
+        selected_garment_photo_type=garment_photo_type,
     )
     model_metadata = _image_metadata(model_image_path)
     garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s model_name=%s category=%s garment_photo_type=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
         debug_label,
         settings.FASHN_MODEL_NAME,
-        category,
+        category_code,
+        payload.get("inputs", {}).get("category"),
         garment_photo_type,
         settings.FASHN_MODE,
         payload.get("inputs", {}).get("generation_mode"),
@@ -535,6 +582,8 @@ def _persist_fashn_debug_request(
     model_image_path: Path,
     garment_image_path: Path,
     payload: dict,
+    selected_category_code: str,
+    selected_garment_photo_type: str,
 ) -> Optional[Path]:
     if not settings.FASHN_DEBUG_SAVE_REQUESTS:
         return None
@@ -555,6 +604,8 @@ def _persist_fashn_debug_request(
                 "garment_image": _image_metadata(garment_image_path),
                 "payload_summary": {
                     "model_name": payload.get("model_name"),
+                    "selected_category_code": selected_category_code,
+                    "selected_garment_photo_type": selected_garment_photo_type,
                     "category": payload.get("inputs", {}).get("category"),
                     "garment_photo_type": payload.get("inputs", {}).get("garment_photo_type"),
                     "mode": payload.get("inputs", {}).get("mode"),
@@ -625,40 +676,18 @@ def _command_category(asset: GarmentAsset, fallback: str) -> str:
     return fallback
 
 
-def _fashn_category(asset: GarmentAsset, fallback: str) -> str:
-    if asset.category and asset.category.code:
-        normalized = asset.category.code.strip().lower()
-        mapping = {
-            "top": "tops",
-            "tops": "tops",
-            "tshirt": "tops",
-            "tee": "tops",
-            "shirt": "tops",
-            "hoodie": "tops",
-            "blouse": "tops",
-            "sweater": "tops",
-            "jacket": "tops",
-            "coat": "tops",
-            "bottom": "bottoms",
-            "bottoms": "bottoms",
-            "pants": "bottoms",
-            "trousers": "bottoms",
-            "jeans": "bottoms",
-            "skirt": "bottoms",
-            "shorts": "bottoms",
-            "dress": "one-pieces",
-            "jumpsuit": "one-pieces",
-            "one-piece": "one-pieces",
-            "one_pieces": "one-pieces",
-            "one-pieces": "one-pieces",
-        }
-        if normalized in mapping:
-            return mapping[normalized]
+def _selected_category_code(explicit_category_code: Optional[str], asset: Optional[GarmentAsset], fallback: str) -> str:
+    if explicit_category_code and explicit_category_code.strip():
+        return explicit_category_code.strip().lower()
+    if asset and asset.category and asset.category.code:
+        return asset.category.code.strip().lower()
     return fallback
 
 
-def _fashn_garment_photo_type(asset: GarmentAsset) -> str:
+def _resolved_garment_photo_type(explicit_garment_photo_type: Optional[str], asset: Optional[GarmentAsset]) -> str:
     _ = asset
+    if explicit_garment_photo_type and explicit_garment_photo_type.strip():
+        return explicit_garment_photo_type.strip().lower()
     return settings.FASHN_GARMENT_PHOTO_TYPE
 
 
@@ -666,15 +695,17 @@ def _build_fashn_payload(
     *,
     model_image_path: Path,
     garment_image_path: Path,
-    category: str,
+    category_code: str,
     garment_photo_type: str,
 ) -> dict:
+    request_category = _fashn_request_category(category_code)
     template = settings.FASHN_REQUEST_TEMPLATE_JSON.strip()
     replacements = {
         "{{MODEL_IMAGE}}": _image_to_data_url(model_image_path),
         "{{GARMENT_IMAGE}}": _image_to_data_url(garment_image_path),
         "{{PRODUCT_IMAGE}}": _image_to_data_url(garment_image_path),
-        "{{CATEGORY}}": category,
+        "{{CATEGORY}}": request_category,
+        "{{SELECTED_CATEGORY_CODE}}": category_code,
         "{{GARMENT_PHOTO_TYPE}}": garment_photo_type,
         "{{OUTPUT_FORMAT}}": settings.FASHN_OUTPUT_FORMAT,
         "{{RETURN_BASE64}}": settings.FASHN_RETURN_BASE64,
@@ -714,7 +745,7 @@ def _build_fashn_payload(
         "inputs": {
             "model_image": replacements["{{MODEL_IMAGE}}"],
             "garment_image": replacements["{{GARMENT_IMAGE}}"],
-            "category": category,
+            "category": request_category,
             "garment_photo_type": garment_photo_type,
             "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
             "moderation_level": settings.FASHN_MODERATION_LEVEL,
@@ -728,6 +759,38 @@ def _build_fashn_payload(
     if settings.FASHN_NUM_SAMPLES > 0:
         payload["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
     return payload
+
+
+def _fashn_request_category(category_code: str) -> str:
+    normalized = category_code.strip().lower()
+    model_name = settings.FASHN_MODEL_NAME.strip().lower()
+    if model_name in {"tryon-v1.6", "tryon_v1_6", "tryon-v1-6"}:
+        mapping = {
+            "top": "tops",
+            "tops": "tops",
+            "tshirt": "tops",
+            "tee": "tops",
+            "shirt": "tops",
+            "hoodie": "tops",
+            "blouse": "tops",
+            "sweater": "tops",
+            "jacket": "tops",
+            "coat": "tops",
+            "bottom": "bottoms",
+            "bottoms": "bottoms",
+            "pants": "bottoms",
+            "trousers": "bottoms",
+            "jeans": "bottoms",
+            "skirt": "bottoms",
+            "shorts": "bottoms",
+            "dress": "one-pieces",
+            "jumpsuit": "one-pieces",
+            "one-piece": "one-pieces",
+            "one_pieces": "one-pieces",
+            "one-pieces": "one-pieces",
+        }
+        return mapping.get(normalized, normalized)
+    return normalized
 
 
 def _replace_fashn_template_placeholders(payload: object, replacements: dict[str, object]) -> object:
