@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.db.models import *  # noqa: F401,F403
 from app.db.session import SessionLocal, engine
 from app.services.catvton_runtime import get_catvton_runtime_status, preload_catvton_runtime
+from app.services.openai_client import run_openai_startup_self_test
 from app.services.seed import seed_reference_data
 
 app = FastAPI(title=settings.PROJECT_NAME, debug=settings.DEBUG, version="0.1.0")
@@ -40,6 +41,8 @@ def startup_event() -> None:
         except Exception:
             if settings.CATVTON_FAIL_FAST:
                 raise
+
+    run_openai_startup_self_test()
 
 
 @app.get("/")

@@ -5,9 +5,9 @@ import re
 from typing import Any
 
 import httpx
-from openai import OpenAI
 
 from app.core.config import settings
+from app.services.openai_client import get_openai_api_key, get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +17,9 @@ SYSTEM_MESSAGE = "You describe clothing items precisely for virtual try-on syste
 USER_PROMPT = "Describe this clothing item as: color + fit + type (max 6 words). No sentence."
 FALLBACK_PROMPT = "clothing item"
 
-_client: OpenAI | None = None
-
-
-def _get_openai_client() -> OpenAI:
-    global _client
-    if not settings.OPENAI_API_KEY.strip():
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
-    if _client is None:
-        _client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    return _client
-
-
 def generate_prompt_from_image(image_url: str) -> str:
+    if not get_openai_api_key():
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
     messages = [
         {
             "role": "system",
@@ -50,7 +40,7 @@ def generate_prompt_from_image(image_url: str) -> str:
         },
     ]
 
-    response = _get_openai_client().chat.completions.create(
+    response = get_openai_client().chat.completions.create(
         model=VISION_MODEL_NAME,
         messages=messages,
         max_tokens=30,

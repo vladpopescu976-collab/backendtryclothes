@@ -5,9 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from openai import OpenAI
-
-from app.core.config import settings
+from app.services.openai_client import get_openai_api_key, get_openai_client
 from app.services.tryon_routing import normalize_category
 
 logger = logging.getLogger(__name__)
@@ -21,9 +19,6 @@ USER_PROMPT = (
     "Mention garment type, fit, material, texture and important details. Maximum 18 words."
 )
 
-_client: OpenAI | None = None
-
-
 @dataclass(frozen=True)
 class GarmentPromptOutcome:
     prompt: str
@@ -33,7 +28,7 @@ class GarmentPromptOutcome:
 
 def generate_premium_garment_prompt(image_reference: str, user_category: str) -> GarmentPromptOutcome:
     fallback_prompt = fallback_prompt_for_category(user_category)
-    if not settings.OPENAI_API_KEY.strip():
+    if not get_openai_api_key():
         logger.warning("OPENAI_API_KEY is not configured. Using premium fallback prompt.")
         logger.info(
             'PREMIUM_PROMPT_DEBUG generated_prompt="%s" response_ms=%s total_tokens=%s output_words=%s output_chars=%s fallback_used=%s',
@@ -48,7 +43,7 @@ def generate_premium_garment_prompt(image_reference: str, user_category: str) ->
 
     try:
         started_at = time.monotonic()
-        response = _get_openai_client().chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model=VISION_MODEL_NAME,
             messages=[
                 {
@@ -122,13 +117,6 @@ def fallback_prompt_for_category(user_category: str) -> str:
         normalized,
         "Realistic garment, accurate fit, visible seams, natural folds, fabric texture.",
     )
-
-
-def _get_openai_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    return _client
 
 
 def _sanitize_prompt(value: str) -> str:
