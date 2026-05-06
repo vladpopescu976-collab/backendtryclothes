@@ -12,11 +12,15 @@ from app.services.tryon_routing import normalize_category
 logger = logging.getLogger(__name__)
 
 VISION_MODEL_NAME = "gpt-4o-mini"
-SYSTEM_MESSAGE = "You analyze garments for premium virtual try-on reconstruction."
+SYSTEM_MESSAGE = (
+    "You analyze garments for premium virtual try-on reconstruction. "
+    "Return one concise, visual, reconstruction-focused description with realistic garment details only."
+)
 USER_PROMPT = (
-    "Describe this garment for virtual try-on in one concise factual sentence. "
-    "Include color, garment type, fit, fabric or texture, sleeves, pattern, silhouette, length, layering, "
-    "and any important visual traits. No marketing language."
+    "Describe this garment in 15-40 words for premium virtual try-on reconstruction. "
+    "Include garment type, color, fit, silhouette, fabric/material, texture, folds, seams/stitching, "
+    "layering, sleeves, visible prints or logos, and realism-critical details. "
+    "Be factual, concise, and reconstruction-focused. No marketing language."
 )
 
 _client: OpenAI | None = None
@@ -46,12 +50,15 @@ def generate_premium_garment_prompt(image_reference: str, user_category: str) ->
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": USER_PROMPT},
+                        {
+                            "type": "text",
+                            "text": f"{USER_PROMPT} Category hint: {normalize_category(user_category) or 'unknown'}.",
+                        },
                         {"type": "image_url", "image_url": {"url": image_reference}},
                     ],
                 },
             ],
-            max_tokens=80,
+            max_tokens=100,
             temperature=0,
         )
         prompt = _sanitize_prompt(response.choices[0].message.content or "")
@@ -68,22 +75,25 @@ def generate_premium_garment_prompt(image_reference: str, user_category: str) ->
 def fallback_prompt_for_category(user_category: str) -> str:
     normalized = normalize_category(user_category)
     mapping = {
-        "hoodie": "oversized hoodie with realistic fabric folds",
-        "hanorac": "oversized hoodie with realistic fabric folds",
-        "dress": "elegant dress with realistic fabric folds",
-        "rochie": "elegant dress with realistic fabric folds",
-        "jeans": "denim jeans with realistic seams and fabric texture",
-        "blugi": "denim jeans with realistic seams and fabric texture",
-        "tshirt": "structured t-shirt with realistic cotton texture",
-        "tricou": "structured t-shirt with realistic cotton texture",
-        "shirt": "structured shirt with realistic fabric drape",
-        "camasa": "structured shirt with realistic fabric drape",
-        "cămașă": "structured shirt with realistic fabric drape",
-        "jacket": "tailored jacket with realistic structure and fabric depth",
-        "geaca": "tailored jacket with realistic structure and fabric depth",
-        "geacă": "tailored jacket with realistic structure and fabric depth",
+        "hoodie": "Oversized black hoodie with thick cotton texture, dropped shoulders, relaxed fit, realistic folds and front print preservation.",
+        "hanorac": "Oversized black hoodie with thick cotton texture, dropped shoulders, relaxed fit, realistic folds and front print preservation.",
+        "dress": "Elegant long black dress with fitted waist, soft flowing fabric, realistic drape and natural fold movement.",
+        "rochie": "Elegant long black dress with fitted waist, soft flowing fabric, realistic drape and natural fold movement.",
+        "jeans": "Loose-fit blue denim jeans with medium wash texture, visible seam stitching, slightly baggy silhouette and realistic fabric folds.",
+        "blugi": "Loose-fit blue denim jeans with medium wash texture, visible seam stitching, slightly baggy silhouette and realistic fabric folds.",
+        "tshirt": "Structured t-shirt with soft cotton texture, clean sleeve shape, realistic hem stitching and natural fabric drape.",
+        "tricou": "Structured t-shirt with soft cotton texture, clean sleeve shape, realistic hem stitching and natural fabric drape.",
+        "shirt": "Button-up shirt with crisp collar structure, visible seam lines, light fabric drape and realistic sleeve folds.",
+        "camasa": "Button-up shirt with crisp collar structure, visible seam lines, light fabric drape and realistic sleeve folds.",
+        "cămașă": "Button-up shirt with crisp collar structure, visible seam lines, light fabric drape and realistic sleeve folds.",
+        "jacket": "Black jacket with structured fit, visible zipper and seam details, realistic outerwear texture and preserved garment shape.",
+        "geaca": "Black jacket with structured fit, visible zipper and seam details, realistic outerwear texture and preserved garment shape.",
+        "geacă": "Black jacket with structured fit, visible zipper and seam details, realistic outerwear texture and preserved garment shape.",
     }
-    return mapping.get(normalized, "realistic clothing item with accurate fit and fabric texture")
+    return mapping.get(
+        normalized,
+        "Realistic clothing item with accurate fit, clear garment structure, visible seams, natural folds and believable fabric texture.",
+    )
 
 
 def _get_openai_client() -> OpenAI:
@@ -97,6 +107,6 @@ def _sanitize_prompt(value: str) -> str:
     cleaned = value.strip().strip('"').strip("'")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     words = cleaned.split()
-    if len(words) > 26:
-        cleaned = " ".join(words[:26])
+    if len(words) > 40:
+        cleaned = " ".join(words[:40])
     return cleaned

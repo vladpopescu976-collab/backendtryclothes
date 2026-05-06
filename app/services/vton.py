@@ -24,7 +24,12 @@ from app.models.garment_asset import GarmentAsset
 from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
 from app.services.garment_prompt_service import generate_premium_garment_prompt
-from app.services.tryon_routing import GenerationTier, resolve_tryon_routing
+from app.services.tryon_routing import (
+    GenerationTier,
+    resolve_tryon_routing,
+    validate_premium_category,
+    validate_standard_category,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,7 @@ class TryOnRoutingMetadata:
     forced_premium: bool
     premium_recommended: bool
     category: str
+    normalized_fashn_category: str | None = None
     fashn_job_id: str | None = None
     generated_prompt: str | None = None
 
@@ -499,7 +505,7 @@ def _run_fashn_pass(
         generation_id,
         user_id,
         category_code,
-        payload.get("inputs", {}).get("category"),
+        routing_metadata.normalized_fashn_category,
         payload["model_name"],
         routing_metadata.requested_generation_tier,
         routing_metadata.final_generation_tier,
@@ -535,7 +541,14 @@ def _run_fashn_pass(
         build_result.garment_image.was_compressed,
         build_result.garment_image.was_converted,
     )
-    logger.info("FASHN_DEBUG payload=%s", json.dumps(payload, sort_keys=True, ensure_ascii=False))
+    logger.info(
+        "FASHN_DEBUG payload=%s",
+        json.dumps(
+            _redacted_payload(payload, build_result.model_image, build_result.garment_image),
+            sort_keys=True,
+            ensure_ascii=False,
+        ),
+    )
 
     with httpx.Client(timeout=settings.TRYON_TIMEOUT_SECONDS) as client:
         response = client.post(f"{settings.FASHN_BASE_URL}/run", headers=headers, json=payload)
@@ -743,7 +756,10 @@ def _persist_fashn_debug_request(
         garment_copy_path = directory / f"garment_input{garment_image_path.suffix.lower() or '.img'}"
         shutil.copyfile(model_image_path, model_copy_path)
         shutil.copyfile(garment_image_path, garment_copy_path)
-        _write_json(directory / "request_payload.json", payload)
+        _write_json(
+            directory / "request_payload.json",
+            _redacted_payload(payload, prepared_model_image, prepared_garment_image),
+        )
         _write_json(
             directory / "request_metadata.json",
             {
@@ -757,6 +773,7 @@ def _persist_fashn_debug_request(
                     "requested_generation_tier": routing_metadata.requested_generation_tier,
                     "final_generation_tier": routing_metadata.final_generation_tier,
                     "selected_category_code": routing_metadata.category,
+                    "normalized_fashn_category": routing_metadata.normalized_fashn_category,
                     "selected_garment_photo_type": selected_garment_photo_type,
                     "category": payload.get("inputs", {}).get("category"),
                     "credits_charged": routing_metadata.credits_charged,
@@ -864,6 +881,7 @@ def _aggregate_routing_metadata(metadata_items: list[TryOnRoutingMetadata]) -> T
         forced_premium=any(item.forced_premium for item in metadata_items),
         premium_recommended=any(item.premium_recommended for item in metadata_items),
         category="multiple",
+        normalized_fashn_category="multiple",
         fashn_job_id=metadata_items[-1].fashn_job_id,
         generated_prompt=None,
     )
@@ -877,13 +895,16 @@ def _build_fashn_payload(
     garment_photo_type: str,
     requested_generation_tier: Optional[str],
 ) -> FashnPayloadBuildResult:
-    _ = garment_photo_type
-    routing_decision = resolve_tryon_routing(
-        user_category=category_code,
-        requested_generation_tier=requested_generation_tier,
-    )
+    try:
+        routing_decision = resolve_tryon_routing(
+            user_category=category_code,
+            requested_generation_tier=requested_generation_tier,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     model_image = _prepare_fashn_input_image(model_image_path)
     garment_image = _prepare_fashn_input_image(garment_image_path)
+    normalized_garment_photo_type = (garment_photo_type or settings.FASHN_GARMENT_PHOTO_TYPE or "flat-lay").strip().lower() or "flat-lay"
     metadata = TryOnRoutingMetadata(
         requested_generation_tier=routing_decision.requested_generation_tier.value,
         final_generation_tier=routing_decision.final_generation_tier.value,
@@ -897,6 +918,8 @@ def _build_fashn_payload(
     )
 
     if routing_decision.final_generation_tier == GenerationTier.premium:
+        premium_category = validate_premium_category(routing_decision.premium_category)
+        metadata.normalized_fashn_category = premium_category
         prompt_outcome = generate_premium_garment_prompt(garment_image.data_url, routing_decision.user_category)
         metadata.openai_analysis_success = prompt_outcome.openai_analysis_success
         metadata.fallback_used = prompt_outcome.fallback_used
@@ -910,6 +933,8 @@ def _build_fashn_payload(
                 "resolution": "1k",
                 "generation_mode": "balanced",
                 "num_images": 1,
+                "output_format": "png",
+                "return_base64": True,
             },
         }
         return FashnPayloadBuildResult(
@@ -920,16 +945,26 @@ def _build_fashn_payload(
             payload_hash=_payload_hash(payload),
         )
 
-    # Standard stays intentionally minimal for cost/predictability on tryon-v1.6.
+    standard_category = validate_standard_category(routing_decision.standard_category)
+    metadata.normalized_fashn_category = standard_category
+    seed = settings.DEBUG_FASHN_SEED if settings.DEBUG and settings.DEBUG_FASHN_SEED is not None else settings.FASHN_SEED
+    if seed is None:
+        seed = 42
+
+    # Restore the richer v1.6 payload that previously produced more consistent results.
     inputs = {
+        "mode": "balanced",
+        "category": standard_category,
         "model_image": model_image.data_url,
+        "num_samples": 1,
         "garment_image": garment_image.data_url,
-        "category": routing_decision.standard_category,
+        "output_format": "png",
+        "return_base64": True,
+        "moderation_level": "permissive",
+        "segmentation_free": True,
+        "garment_photo_type": normalized_garment_photo_type or "flat-lay",
     }
-    if settings.DEBUG and settings.DEBUG_FASHN_SEED is not None:
-        inputs["seed"] = settings.DEBUG_FASHN_SEED
-    elif settings.DEBUG:
-        logger.info("FASHN_DEBUG: tryon-v1.6 seed not configured; output may be non-deterministic.")
+    inputs["seed"] = seed
 
     payload = {
         "model_name": routing_decision.fashn_model_name,
@@ -1144,6 +1179,33 @@ def _prepared_image_metadata(image: PreparedFashnInputImage) -> dict[str, object
         "was_compressed": image.was_compressed,
         "was_converted": image.was_converted,
     }
+
+
+def _redacted_payload(
+    payload: dict,
+    model_image: PreparedFashnInputImage,
+    garment_image: PreparedFashnInputImage,
+) -> dict[str, object]:
+    sanitized = json.loads(json.dumps(payload))
+    inputs = sanitized.get("inputs", {})
+    if "model_image" in inputs:
+        inputs["model_image"] = {
+            "redacted": True,
+            "mime_type": model_image.final_mime_type,
+            "bytes": model_image.final_file_size,
+            "sha256": model_image.final_hash,
+            "dimensions": [model_image.final_width, model_image.final_height],
+        }
+    garment_field = "product_image" if "product_image" in inputs else "garment_image"
+    if garment_field in inputs:
+        inputs[garment_field] = {
+            "redacted": True,
+            "mime_type": garment_image.final_mime_type,
+            "bytes": garment_image.final_file_size,
+            "sha256": garment_image.final_hash,
+            "dimensions": [garment_image.final_width, garment_image.final_height],
+        }
+    return sanitized
 
 
 def _compare_standard_generation_signature(
