@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -27,13 +28,12 @@ from app.services.tryon_routing import GenerationTier, resolve_tryon_routing
 
 logger = logging.getLogger(__name__)
 
-JPEG_DATA_URL_PREFIX = "data:image/jpeg;base64,"
-MAX_NORMALIZED_DIMENSION = 768
 MIN_IMAGE_BASE64_LENGTH = 1024
 MIN_IMAGE_DIMENSION = 160
 MAX_IMAGE_ASPECT_RATIO = 4.0
 MAX_BACKGROUND_RATIO = 0.94
 MIN_FOREGROUND_RATIO = 0.08
+FASHN_PASSTHROUGH_MIME_TYPES = {"image/jpeg", "image/png"}
 
 
 class InvalidTryOnImageError(ValueError):
@@ -59,6 +59,35 @@ class TryOnRoutingMetadata:
 class TryOnProviderOutcome:
     result_path: Path
     metadata: TryOnRoutingMetadata | None = None
+
+
+@dataclass(frozen=True)
+class PreparedFashnInputImage:
+    data_url: str
+    final_bytes: bytes
+    original_width: int
+    original_height: int
+    final_width: int
+    final_height: int
+    original_file_size: int
+    final_file_size: int
+    original_mime_type: str
+    final_mime_type: str
+    original_hash: str
+    final_hash: str
+    was_resized: bool
+    was_cropped: bool
+    was_compressed: bool
+    was_converted: bool
+
+
+@dataclass(frozen=True)
+class FashnPayloadBuildResult:
+    payload: dict
+    routing_metadata: TryOnRoutingMetadata
+    model_image: PreparedFashnInputImage
+    garment_image: PreparedFashnInputImage
+    payload_hash: str
 
 
 @dataclass
@@ -330,6 +359,7 @@ def _run_fashn_two_pass(
             debug_label=f"{job.id}_upper_pass",
             requested_generation_tier=requested_generation_tier,
             user_id=job.user_id,
+            generation_id=job.id,
         )
         current_image_path = upper_outcome.result_path
         if upper_outcome.metadata:
@@ -348,6 +378,7 @@ def _run_fashn_two_pass(
             debug_label=f"{job.id}_lower_pass",
             requested_generation_tier=requested_generation_tier,
             user_id=job.user_id,
+            generation_id=job.id,
         )
         current_image_path = lower_outcome.result_path
         if lower_outcome.metadata:
@@ -437,44 +468,74 @@ def _run_fashn_pass(
     debug_label: str,
     requested_generation_tier: Optional[str],
     user_id: str,
+    generation_id: str,
 ) -> TryOnProviderOutcome:
     headers = {
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload, routing_metadata = _build_fashn_payload(
+    build_result = _build_fashn_payload(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         category_code=category_code,
         garment_photo_type=garment_photo_type,
         requested_generation_tier=requested_generation_tier,
     )
+    payload = build_result.payload
+    routing_metadata = build_result.routing_metadata
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         payload=payload,
+        payload_hash=build_result.payload_hash,
         routing_metadata=routing_metadata,
         selected_garment_photo_type=garment_photo_type,
+        prepared_model_image=build_result.model_image,
+        prepared_garment_image=build_result.garment_image,
     )
-    model_metadata = _image_metadata(model_image_path)
-    garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s user_id=%s requested_generation_tier=%s final_generation_tier=%s model_name=%s selected_category_code=%s request_category=%s model=%sx%s/%sB garment=%sx%s/%sB",
-        debug_label,
+        "FASHN_DEBUG generation_id=%s user_id=%s requested_category=%s final_category=%s model_name=%s requested_generation_tier=%s final_generation_tier=%s",
+        generation_id,
         user_id,
-        routing_metadata.requested_generation_tier,
-        routing_metadata.final_generation_tier,
-        payload["model_name"],
         category_code,
         payload.get("inputs", {}).get("category"),
-        model_metadata["width"],
-        model_metadata["height"],
-        model_metadata["bytes"],
-        garment_metadata["width"],
-        garment_metadata["height"],
-        garment_metadata["bytes"],
+        payload["model_name"],
+        routing_metadata.requested_generation_tier,
+        routing_metadata.final_generation_tier,
     )
+    logger.info("FASHN_DEBUG payload_hash=%s", build_result.payload_hash)
+    logger.info(
+        "FASHN_DEBUG model_image_hash=%s original=%sx%s final=%sx%s original_bytes=%s final_bytes=%s mime=%s resized=%s cropped=%s compressed=%s converted=%s",
+        build_result.model_image.final_hash,
+        build_result.model_image.original_width,
+        build_result.model_image.original_height,
+        build_result.model_image.final_width,
+        build_result.model_image.final_height,
+        build_result.model_image.original_file_size,
+        build_result.model_image.final_file_size,
+        build_result.model_image.final_mime_type,
+        build_result.model_image.was_resized,
+        build_result.model_image.was_cropped,
+        build_result.model_image.was_compressed,
+        build_result.model_image.was_converted,
+    )
+    logger.info(
+        "FASHN_DEBUG garment_image_hash=%s original=%sx%s final=%sx%s original_bytes=%s final_bytes=%s mime=%s resized=%s cropped=%s compressed=%s converted=%s",
+        build_result.garment_image.final_hash,
+        build_result.garment_image.original_width,
+        build_result.garment_image.original_height,
+        build_result.garment_image.final_width,
+        build_result.garment_image.final_height,
+        build_result.garment_image.original_file_size,
+        build_result.garment_image.final_file_size,
+        build_result.garment_image.final_mime_type,
+        build_result.garment_image.was_resized,
+        build_result.garment_image.was_cropped,
+        build_result.garment_image.was_compressed,
+        build_result.garment_image.was_converted,
+    )
+    logger.info("FASHN_DEBUG payload=%s", json.dumps(payload, sort_keys=True, ensure_ascii=False))
 
     with httpx.Client(timeout=settings.TRYON_TIMEOUT_SECONDS) as client:
         response = client.post(f"{settings.FASHN_BASE_URL}/run", headers=headers, json=payload)
@@ -521,6 +582,15 @@ def _run_fashn_pass(
                         debug_directory / "provider_output_metadata.json",
                         _image_metadata(output_path),
                     )
+                _compare_standard_generation_signature(
+                    generation_id=generation_id,
+                    debug_label=debug_label,
+                    routing_metadata=routing_metadata,
+                    payload_hash=build_result.payload_hash,
+                    model_image=build_result.model_image,
+                    garment_image=build_result.garment_image,
+                    provider_output_path=output_path,
+                )
                 return TryOnProviderOutcome(result_path=output_path, metadata=routing_metadata)
             if status_value == "failed":
                 if debug_directory is not None:
@@ -656,8 +726,11 @@ def _persist_fashn_debug_request(
     model_image_path: Path,
     garment_image_path: Path,
     payload: dict,
+    payload_hash: str,
     routing_metadata: TryOnRoutingMetadata,
     selected_garment_photo_type: str,
+    prepared_model_image: PreparedFashnInputImage,
+    prepared_garment_image: PreparedFashnInputImage,
 ) -> Optional[Path]:
     if not settings.FASHN_DEBUG_SAVE_REQUESTS:
         return None
@@ -676,8 +749,11 @@ def _persist_fashn_debug_request(
             {
                 "model_image": _image_metadata(model_image_path),
                 "garment_image": _image_metadata(garment_image_path),
+                "prepared_model_image": _prepared_image_metadata(prepared_model_image),
+                "prepared_garment_image": _prepared_image_metadata(prepared_garment_image),
                 "payload_summary": {
                     "model_name": payload.get("model_name"),
+                    "payload_hash": payload_hash,
                     "requested_generation_tier": routing_metadata.requested_generation_tier,
                     "final_generation_tier": routing_metadata.final_generation_tier,
                     "selected_category_code": routing_metadata.category,
@@ -800,14 +876,14 @@ def _build_fashn_payload(
     category_code: str,
     garment_photo_type: str,
     requested_generation_tier: Optional[str],
-) -> tuple[dict, TryOnRoutingMetadata]:
+) -> FashnPayloadBuildResult:
     _ = garment_photo_type
     routing_decision = resolve_tryon_routing(
         user_category=category_code,
         requested_generation_tier=requested_generation_tier,
     )
-    model_image = _normalized_image_to_data_url(model_image_path)
-    garment_image = _normalized_image_to_data_url(garment_image_path)
+    model_image = _prepare_fashn_input_image(model_image_path)
+    garment_image = _prepare_fashn_input_image(garment_image_path)
     metadata = TryOnRoutingMetadata(
         requested_generation_tier=routing_decision.requested_generation_tier.value,
         final_generation_tier=routing_decision.final_generation_tier.value,
@@ -820,87 +896,332 @@ def _build_fashn_payload(
         category=routing_decision.user_category,
     )
 
-    payload = {
-        "model": routing_decision.fashn_model_name,
-        "category": routing_decision.standard_category,
-        "model_image": model_image,
-        "garment_image": garment_image,
-    }
-    print("USER CATEGORY:", routing_decision.user_category)
-    print("MAPPED CATEGORY:", payload["category"])
-    print("MODEL:", payload["model"])
-    print("CATEGORY:", payload["category"])
-    print("MODEL IMAGE SIZE:", len(model_image))
-    print("GARMENT IMAGE SIZE:", len(garment_image))
-
     if routing_decision.final_generation_tier == GenerationTier.premium:
-        prompt_outcome = generate_premium_garment_prompt(garment_image, routing_decision.user_category)
+        prompt_outcome = generate_premium_garment_prompt(garment_image.data_url, routing_decision.user_category)
         metadata.openai_analysis_success = prompt_outcome.openai_analysis_success
         metadata.fallback_used = prompt_outcome.fallback_used
         metadata.generated_prompt = prompt_outcome.prompt
-        premium_payload = {
+        payload = {
             "model_name": routing_decision.fashn_model_name,
             "inputs": {
-                "model_image": model_image,
-                "product_image": garment_image,
+                "model_image": model_image.data_url,
+                "product_image": garment_image.data_url,
                 "prompt": prompt_outcome.prompt,
                 "resolution": "1k",
                 "generation_mode": "balanced",
                 "num_images": 1,
             },
         }
-        return premium_payload, metadata
+        return FashnPayloadBuildResult(
+            payload=payload,
+            routing_metadata=metadata,
+            model_image=model_image,
+            garment_image=garment_image,
+            payload_hash=_payload_hash(payload),
+        )
 
-    standard_payload = {
-        "model_name": routing_decision.fashn_model_name,
-        "inputs": {
-            "model_image": model_image,
-            "garment_image": garment_image,
-            "category": routing_decision.standard_category,
-        },
+    # Standard stays intentionally minimal for cost/predictability on tryon-v1.6.
+    inputs = {
+        "model_image": model_image.data_url,
+        "garment_image": garment_image.data_url,
+        "category": routing_decision.standard_category,
     }
-    return standard_payload, metadata
+    if settings.DEBUG and settings.DEBUG_FASHN_SEED is not None:
+        inputs["seed"] = settings.DEBUG_FASHN_SEED
+    elif settings.DEBUG:
+        logger.info("FASHN_DEBUG: tryon-v1.6 seed not configured; output may be non-deterministic.")
+
+    payload = {
+        "model_name": routing_decision.fashn_model_name,
+        "inputs": inputs,
+    }
+    return FashnPayloadBuildResult(
+        payload=payload,
+        routing_metadata=metadata,
+        model_image=model_image,
+        garment_image=garment_image,
+        payload_hash=_payload_hash(payload),
+    )
 
 
 def validate_image(image_base64: str) -> bool:
+    if not image_base64 or len(image_base64.strip()) < MIN_IMAGE_BASE64_LENGTH:
+        return False
     try:
-        if not image_base64 or len(image_base64.strip()) < MIN_IMAGE_BASE64_LENGTH:
-            return False
-        image = _open_base64_image(image_base64)
-        width, height = image.size
-        if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
-            return False
-        shorter_side = max(1, min(width, height))
-        aspect_ratio = max(width, height) / shorter_side
-        if aspect_ratio > MAX_IMAGE_ASPECT_RATIO:
-            return False
-        background_ratio, foreground_ratio = _estimate_image_content(image)
-        if background_ratio > MAX_BACKGROUND_RATIO:
-            return False
-        if foreground_ratio < MIN_FOREGROUND_RATIO:
-            return False
-        return True
+        return _validate_image_bytes(_data_url_bytes(image_base64))
     except Exception:
         return False
 
 
 def normalize_image(image_base64: str) -> str:
-    image = _open_base64_image(image_base64).convert("RGB")
-    if max(image.size) > MAX_NORMALIZED_DIMENSION:
-        image.thumbnail((MAX_NORMALIZED_DIMENSION, MAX_NORMALIZED_DIMENSION), _resampling_filter())
-    output = BytesIO()
-    image.save(output, format="JPEG", quality=95, optimize=True)
-    return JPEG_DATA_URL_PREFIX + base64.b64encode(output.getvalue()).decode("utf-8")
+    prepared_image = _prepare_fashn_input_image_from_bytes(
+        _data_url_bytes(image_base64),
+        fallback_mime_type=_data_url_mime_type(image_base64),
+    )
+    return prepared_image.data_url
 
 
 def _normalized_image_to_data_url(path: Path) -> str:
-    raw_image = _image_to_data_url(path)
-    if not validate_image(raw_image):
+    return _prepare_fashn_input_image(path).data_url
+
+
+def _prepare_fashn_input_image(path: Path) -> PreparedFashnInputImage:
+    fallback_mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    return _prepare_fashn_input_image_from_bytes(path.read_bytes(), fallback_mime_type=fallback_mime_type)
+
+
+def _prepare_fashn_input_image_from_bytes(raw_bytes: bytes, *, fallback_mime_type: str) -> PreparedFashnInputImage:
+    if not _validate_image_bytes(raw_bytes):
         raise InvalidTryOnImageError("Invalid image. Please upload a clearer photo.")
-    normalized_image = normalize_image(raw_image)
-    if not validate_image(normalized_image):
-        raise InvalidTryOnImageError("Invalid image. Please upload a clearer photo.")
-    return normalized_image
+
+    # Keep FASHN inputs as close as possible to the uploaded bytes: no crop, no
+    # resize, and only a single conversion when orientation or format requires it.
+    with Image.open(BytesIO(raw_bytes)) as original_image:
+        original_image.load()
+        original_width, original_height = original_image.size
+        original_format = (original_image.format or _mime_to_pil_format(fallback_mime_type)).upper()
+        original_mime_type = _normalize_mime_type(fallback_mime_type, original_format)
+        orientation = _image_orientation(original_image)
+        corrected_image = ImageOps.exif_transpose(original_image).copy()
+
+    normalized_for_orientation = orientation not in {None, 1}
+    can_passthrough_original = original_mime_type in FASHN_PASSTHROUGH_MIME_TYPES and not normalized_for_orientation
+
+    if can_passthrough_original:
+        final_bytes = raw_bytes
+        final_mime_type = original_mime_type
+        final_width = original_width
+        final_height = original_height
+        was_compressed = False
+        was_converted = False
+    else:
+        final_format = _preferred_fashn_export_format(corrected_image, original_mime_type)
+        final_bytes, final_mime_type = _encode_fashn_image(corrected_image, final_format)
+        if not _validate_image_bytes(final_bytes):
+            raise InvalidTryOnImageError("Invalid image. Please upload a clearer photo.")
+        final_width = corrected_image.width
+        final_height = corrected_image.height
+        was_compressed = final_mime_type == "image/jpeg"
+        was_converted = final_mime_type != original_mime_type or normalized_for_orientation
+
+    return PreparedFashnInputImage(
+        data_url=_bytes_to_data_url(final_bytes, final_mime_type),
+        final_bytes=final_bytes,
+        original_width=original_width,
+        original_height=original_height,
+        final_width=final_width,
+        final_height=final_height,
+        original_file_size=len(raw_bytes),
+        final_file_size=len(final_bytes),
+        original_mime_type=original_mime_type,
+        final_mime_type=final_mime_type,
+        original_hash=_sha256_hex(raw_bytes),
+        final_hash=_sha256_hex(final_bytes),
+        was_resized=False,
+        was_cropped=False,
+        was_compressed=was_compressed,
+        was_converted=was_converted,
+    )
+
+
+def _validate_image_bytes(raw_bytes: bytes) -> bool:
+    if not raw_bytes or len(raw_bytes) < 1024:
+        return False
+    try:
+        with Image.open(BytesIO(raw_bytes)) as original_image:
+            original_image.load()
+            image = ImageOps.exif_transpose(original_image)
+            width, height = image.size
+            if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
+                return False
+            shorter_side = max(1, min(width, height))
+            aspect_ratio = max(width, height) / shorter_side
+            if aspect_ratio > MAX_IMAGE_ASPECT_RATIO:
+                return False
+            background_ratio, foreground_ratio = _estimate_image_content(image)
+            if background_ratio > MAX_BACKGROUND_RATIO:
+                return False
+            if foreground_ratio < MIN_FOREGROUND_RATIO:
+                return False
+            return True
+    except Exception:
+        return False
+
+
+def _data_url_bytes(image_base64: str) -> bytes:
+    encoded = image_base64.split(",", 1)[1] if "," in image_base64 else image_base64
+    return base64.b64decode(encoded)
+
+
+def _data_url_mime_type(image_base64: str) -> str:
+    if image_base64.startswith("data:") and ";base64," in image_base64:
+        return image_base64.split(":", 1)[1].split(";", 1)[0].lower()
+    return "image/jpeg"
+
+
+def _bytes_to_data_url(raw_bytes: bytes, mime_type: str) -> str:
+    encoded = base64.b64encode(raw_bytes).decode("utf-8")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _normalize_mime_type(fallback_mime_type: str, original_format: str) -> str:
+    normalized_fallback = (fallback_mime_type or "").strip().lower()
+    if normalized_fallback in {"image/jpeg", "image/png", "image/webp"}:
+        return normalized_fallback
+    if original_format == "PNG":
+        return "image/png"
+    if original_format == "WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _mime_to_pil_format(mime_type: str) -> str:
+    normalized = (mime_type or "").strip().lower()
+    if normalized == "image/png":
+        return "PNG"
+    if normalized == "image/webp":
+        return "WEBP"
+    return "JPEG"
+
+
+def _preferred_fashn_export_format(image: Image.Image, original_mime_type: str) -> str:
+    if _image_has_alpha(image):
+        return "PNG"
+    if original_mime_type == "image/png":
+        return "PNG"
+    return "JPEG"
+
+
+def _encode_fashn_image(image: Image.Image, image_format: str) -> tuple[bytes, str]:
+    output = BytesIO()
+    if image_format == "PNG":
+        image.save(output, format="PNG")
+        return output.getvalue(), "image/png"
+
+    image.convert("RGB").save(
+        output,
+        format="JPEG",
+        quality=98,
+        subsampling=0,
+    )
+    return output.getvalue(), "image/jpeg"
+
+
+def _image_has_alpha(image: Image.Image) -> bool:
+    return image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info)
+
+
+def _image_orientation(image: Image.Image) -> int | None:
+    try:
+        return image.getexif().get(274)
+    except Exception:
+        return None
+
+
+def _payload_hash(payload: dict) -> str:
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _sha256_hex(serialized.encode("utf-8"))
+
+
+def _sha256_hex(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _prepared_image_metadata(image: PreparedFashnInputImage) -> dict[str, object]:
+    return {
+        "original_width": image.original_width,
+        "original_height": image.original_height,
+        "final_width": image.final_width,
+        "final_height": image.final_height,
+        "original_file_size": image.original_file_size,
+        "final_file_size": image.final_file_size,
+        "original_mime_type": image.original_mime_type,
+        "final_mime_type": image.final_mime_type,
+        "original_hash": image.original_hash,
+        "final_hash": image.final_hash,
+        "was_resized": image.was_resized,
+        "was_cropped": image.was_cropped,
+        "was_compressed": image.was_compressed,
+        "was_converted": image.was_converted,
+    }
+
+
+def _compare_standard_generation_signature(
+    *,
+    generation_id: str,
+    debug_label: str,
+    routing_metadata: TryOnRoutingMetadata,
+    payload_hash: str,
+    model_image: PreparedFashnInputImage,
+    garment_image: PreparedFashnInputImage,
+    provider_output_path: Path,
+) -> None:
+    if not settings.DEBUG or routing_metadata.final_generation_tier != GenerationTier.standard.value:
+        return
+
+    signature_dir = settings.fashn_debug_dir / "standard_signatures"
+    signature_dir.mkdir(parents=True, exist_ok=True)
+
+    source_signature = _sha256_hex(
+        "|".join(
+            [
+                routing_metadata.category,
+                model_image.original_hash,
+                garment_image.original_hash,
+                routing_metadata.final_generation_tier,
+            ]
+        ).encode("utf-8")
+    )
+    output_hash = _sha256_hex(provider_output_path.read_bytes())
+    current_record = {
+        "generation_id": generation_id,
+        "debug_label": debug_label,
+        "category": routing_metadata.category,
+        "payload_hash": payload_hash,
+        "model_image_hash": model_image.final_hash,
+        "garment_image_hash": garment_image.final_hash,
+        "output_hash": output_hash,
+        "created_at": int(time.time()),
+    }
+    signature_path = signature_dir / f"{source_signature}.json"
+    previous_record = None
+    if signature_path.exists():
+        try:
+            previous_record = json.loads(signature_path.read_text(encoding="utf-8"))
+        except Exception:
+            previous_record = None
+
+    if previous_record:
+        preprocessing_changed = any(
+            previous_record.get(key) != current_record[key]
+            for key in ("payload_hash", "model_image_hash", "garment_image_hash")
+        )
+        if preprocessing_changed:
+            logger.warning(
+                "FASHN_DEBUG identical_source_inputs_different_hashes source_signature=%s previous_payload_hash=%s current_payload_hash=%s previous_model_image_hash=%s current_model_image_hash=%s previous_garment_image_hash=%s current_garment_image_hash=%s",
+                source_signature,
+                previous_record.get("payload_hash"),
+                current_record["payload_hash"],
+                previous_record.get("model_image_hash"),
+                current_record["model_image_hash"],
+                previous_record.get("garment_image_hash"),
+                current_record["garment_image_hash"],
+            )
+        elif previous_record.get("output_hash") != current_record["output_hash"]:
+            logger.info(
+                "FASHN_DEBUG identical_input_hashes_diff_output source_signature=%s previous_output_hash=%s current_output_hash=%s conclusion=tryon-v1.6_non_deterministic",
+                source_signature,
+                previous_record.get("output_hash"),
+                current_record["output_hash"],
+            )
+        else:
+            logger.info(
+                "FASHN_DEBUG identical_input_hashes_identical_output source_signature=%s output_hash=%s",
+                source_signature,
+                current_record["output_hash"],
+            )
+
+    signature_path.write_text(json.dumps(current_record, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _open_base64_image(image_base64: str) -> Image.Image:

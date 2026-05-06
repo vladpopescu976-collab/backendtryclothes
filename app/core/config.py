@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     FASHN_GENERATION_MODE: str = "quality"
     FASHN_RESOLUTION: str = "2k"
     FASHN_SEED: int | None = None
+    DEBUG_FASHN_SEED: int | None = None
     FASHN_NUM_SAMPLES: int = 1
     FASHN_REQUEST_TEMPLATE_JSON: str = ""
     FASHN_DEBUG_SAVE_REQUESTS: bool = True
