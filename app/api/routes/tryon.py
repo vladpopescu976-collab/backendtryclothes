@@ -90,6 +90,7 @@ async def _create_job_for_user(
     lower_garment_image: Optional[UploadFile],
     upper_brand_id: Optional[str],
     lower_brand_id: Optional[str],
+    user_category: Optional[str],
     upper_category_code: Optional[str],
     lower_category_code: Optional[str],
     upper_garment_photo_type: Optional[str],
@@ -97,6 +98,16 @@ async def _create_job_for_user(
 ) -> TryOnJobRead:
     if not upper_garment_image and not lower_garment_image:
         raise HTTPException(status_code=400, detail="At least one garment image is required.")
+
+    normalized_user_category = (user_category or "").strip().lower() or None
+    if upper_garment_image and not upper_category_code:
+        upper_category_code = normalized_user_category
+    if lower_garment_image and not lower_category_code and not upper_garment_image:
+        lower_category_code = normalized_user_category
+    if upper_garment_image and not upper_category_code:
+        raise HTTPException(status_code=400, detail="Category is required")
+    if lower_garment_image and not lower_category_code:
+        raise HTTPException(status_code=400, detail="Category is required")
 
     request_started = time.monotonic()
     person_upload = await save_upload_file_with_metrics(person_image, settings.person_upload_dir, "person")
@@ -281,6 +292,7 @@ async def create_job(
     lower_garment_image: Optional[UploadFile] = File(None),
     upper_brand_id: Optional[str] = Form(None),
     lower_brand_id: Optional[str] = Form(None),
+    user_category: Optional[str] = Form(None),
     upper_category_code: Optional[str] = Form(None),
     lower_category_code: Optional[str] = Form(None),
     upper_garment_photo_type: Optional[str] = Form(None),
@@ -296,6 +308,7 @@ async def create_job(
         lower_garment_image=lower_garment_image,
         upper_brand_id=upper_brand_id,
         lower_brand_id=lower_brand_id,
+        user_category=user_category,
         upper_category_code=upper_category_code,
         lower_category_code=lower_category_code,
         upper_garment_photo_type=upper_garment_photo_type,
@@ -310,6 +323,7 @@ async def create_guest_job(
     lower_garment_image: Optional[UploadFile] = File(None),
     upper_brand_id: Optional[str] = Form(None),
     lower_brand_id: Optional[str] = Form(None),
+    user_category: Optional[str] = Form(None),
     upper_category_code: Optional[str] = Form(None),
     lower_category_code: Optional[str] = Form(None),
     upper_garment_photo_type: Optional[str] = Form(None),
@@ -325,6 +339,7 @@ async def create_guest_job(
         lower_garment_image=lower_garment_image,
         upper_brand_id=upper_brand_id,
         lower_brand_id=lower_brand_id,
+        user_category=user_category,
         upper_category_code=upper_category_code,
         lower_category_code=lower_category_code,
         upper_garment_photo_type=upper_garment_photo_type,

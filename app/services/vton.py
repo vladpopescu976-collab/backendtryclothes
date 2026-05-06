@@ -696,14 +696,16 @@ def _build_fashn_payload(
     category_code: str,
     garment_photo_type: str,
 ) -> dict:
-    request_category = _fashn_request_category(category_code)
+    mapped_category = map_category(category_code)
     model_name = "tryon-v1.6"
+    print("USER CATEGORY:", category_code)
+    print("MAPPED CATEGORY:", mapped_category)
     payload = {
         "model_name": model_name,
         "inputs": {
             "model_image": _image_to_data_url(model_image_path),
             "garment_image": _image_to_data_url(garment_image_path),
-            "category": request_category,
+            "category": mapped_category,
             "garment_photo_type": garment_photo_type,
             "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
             "moderation_level": settings.FASHN_MODERATION_LEVEL,
@@ -719,30 +721,25 @@ def _build_fashn_payload(
     return payload
 
 
-def _fashn_request_category(category_code: str) -> str:
-    normalized = category_code.strip().lower()
+def map_category(user_category: str) -> str:
+    normalized = user_category.strip().lower()
     mapping = {
-        "top": "tops",
-        "tops": "tops",
-        "tshirt": "tops",
-        "tee": "tops",
-        "shirt": "tops",
-        "hoodie": "tops",
-        "blouse": "tops",
-        "sweater": "tops",
-        "jacket": "tops",
-        "coat": "tops",
-        "bottom": "bottoms",
-        "bottoms": "bottoms",
-        "pants": "bottoms",
-        "trousers": "bottoms",
-        "jeans": "bottoms",
-        "skirt": "bottoms",
-        "shorts": "bottoms",
-        "dress": "one-pieces",
-        "jumpsuit": "one-pieces",
-        "one-piece": "one-pieces",
-        "one_pieces": "one-pieces",
-        "one-pieces": "one-pieces",
+        "tricou": "tshirt",
+        "camasa": "shirt",
+        "geaca": "jacket",
+        "hanorac": "hoodie",
+        "fusta": "skirt",
+        "rochie": "dress",
+        "blugi": "jeans",
+        "pantaloni": "pants",
+        "tshirt": "tshirt",
+        "tee": "tshirt",
+        "shirt": "shirt",
+        "jacket": "jacket",
+        "hoodie": "hoodie",
+        "skirt": "skirt",
+        "dress": "dress",
+        "jeans": "jeans",
+        "pants": "pants",
     }
-    return mapping.get(normalized, normalized)
+    return mapping.get(normalized, "tshirt")
