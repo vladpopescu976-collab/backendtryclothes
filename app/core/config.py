@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     FASHN_API_KEY: str = ""
     FASHN_BASE_URL: str = "https://api.fashn.ai/v1"
-    FASHN_MODEL_NAME: str = "tryon-max"
+    FASHN_MODEL_NAME: str = "tryon-v1.6"
     FASHN_GARMENT_PHOTO_TYPE: str = "flat-lay"
     FASHN_OUTPUT_FORMAT: str = "png"
     FASHN_SEGMENTATION_FREE: bool = True

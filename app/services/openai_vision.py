@@ -12,6 +12,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 VISION_MODEL_NAME = "gpt-4o-mini"
+TRYON_MODEL_NAME = "tryon-v1.6"
 SYSTEM_MESSAGE = "You describe clothing items precisely for virtual try-on systems."
 USER_PROMPT = "Describe this clothing item as: color + fit + type (max 6 words). No sentence."
 FALLBACK_PROMPT = "clothing item"
@@ -65,22 +66,15 @@ def generate_prompt_from_image(image_url: str) -> str:
 
 
 def run_tryon(user_image_url: str, garment_image_url: str) -> dict[str, Any]:
-    print("USER IMAGE:", user_image_url)
-    print("GARMENT IMAGE:", garment_image_url)
-
-    try:
-        generated_prompt = generate_prompt_from_image(garment_image_url)
-    except Exception as exc:
-        logger.warning("OpenAI prompt generation failed, using fallback prompt: %s", exc)
-        generated_prompt = FALLBACK_PROMPT
-
     payload = {
+        "model": TRYON_MODEL_NAME,
         "model_image": user_image_url,
         "product_image": garment_image_url,
-        "prompt": generated_prompt,
     }
 
-    print("PROMPT:", generated_prompt)
+    print("USING MODEL:", payload["model"])
+    print("USER IMAGE:", user_image_url)
+    print("GARMENT IMAGE:", garment_image_url)
     print("FINAL PAYLOAD:", payload)
     logger.info("FINAL PAYLOAD: %s", payload)
 

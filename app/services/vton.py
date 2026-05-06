@@ -21,7 +21,6 @@ from app.core.config import settings
 from app.models.garment_asset import GarmentAsset
 from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
-from app.services.openai_vision import generate_prompt_from_image
 
 logger = logging.getLogger(__name__)
 
@@ -380,14 +379,15 @@ def _run_fashn_pass(
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
         "Content-Type": "application/json",
     }
-    generated_prompt = _generate_fashn_prompt(garment_image_path)
     payload = _build_fashn_payload(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         category_code=category_code,
         garment_photo_type=garment_photo_type,
-        prompt=generated_prompt,
     )
+    print("USING MODEL:", payload["model_name"])
+    print("USER IMAGE:", str(model_image_path))
+    print("GARMENT IMAGE:", str(garment_image_path))
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
         model_image_path=model_image_path,
@@ -395,21 +395,17 @@ def _run_fashn_pass(
         payload=payload,
         selected_category_code=category_code,
         selected_garment_photo_type=garment_photo_type,
-        generated_prompt=generated_prompt,
     )
     model_metadata = _image_metadata(model_image_path)
     garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s prompt=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s mode=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
         debug_label,
-        settings.FASHN_MODEL_NAME,
+        payload["model_name"],
         category_code,
         payload.get("inputs", {}).get("category"),
         garment_photo_type,
-        generated_prompt,
         settings.FASHN_MODE,
-        payload.get("inputs", {}).get("generation_mode"),
-        payload.get("inputs", {}).get("resolution"),
         settings.FASHN_OUTPUT_FORMAT,
         settings.FASHN_SEGMENTATION_FREE,
         settings.FASHN_RETURN_BASE64,
@@ -589,7 +585,6 @@ def _persist_fashn_debug_request(
     payload: dict,
     selected_category_code: str,
     selected_garment_photo_type: str,
-    generated_prompt: Optional[str],
 ) -> Optional[Path]:
     if not settings.FASHN_DEBUG_SAVE_REQUESTS:
         return None
@@ -612,20 +607,15 @@ def _persist_fashn_debug_request(
                     "model_name": payload.get("model_name"),
                     "selected_category_code": selected_category_code,
                     "selected_garment_photo_type": selected_garment_photo_type,
-                    "generated_prompt": generated_prompt,
                     "category": payload.get("inputs", {}).get("category"),
                     "garment_photo_type": payload.get("inputs", {}).get("garment_photo_type"),
-                    "prompt": payload.get("inputs", {}).get("prompt"),
                     "mode": payload.get("inputs", {}).get("mode"),
-                    "generation_mode": payload.get("inputs", {}).get("generation_mode"),
-                    "resolution": payload.get("inputs", {}).get("resolution"),
                     "output_format": payload.get("inputs", {}).get("output_format"),
                     "segmentation_free": payload.get("inputs", {}).get("segmentation_free"),
                     "moderation_level": payload.get("inputs", {}).get("moderation_level"),
                     "return_base64": payload.get("inputs", {}).get("return_base64"),
                     "seed": payload.get("inputs", {}).get("seed"),
                     "num_samples": payload.get("inputs", {}).get("num_samples"),
-                    "num_images": payload.get("inputs", {}).get("num_images"),
                 },
             },
         )
@@ -705,58 +695,14 @@ def _build_fashn_payload(
     garment_image_path: Path,
     category_code: str,
     garment_photo_type: str,
-    prompt: Optional[str],
 ) -> dict:
     request_category = _fashn_request_category(category_code)
-    template = settings.FASHN_REQUEST_TEMPLATE_JSON.strip()
-    replacements = {
-        "{{MODEL_IMAGE}}": _image_to_data_url(model_image_path),
-        "{{GARMENT_IMAGE}}": _image_to_data_url(garment_image_path),
-        "{{PRODUCT_IMAGE}}": _image_to_data_url(garment_image_path),
-        "{{CATEGORY}}": request_category,
-        "{{SELECTED_CATEGORY_CODE}}": category_code,
-        "{{GARMENT_PHOTO_TYPE}}": garment_photo_type,
-        "{{OUTPUT_FORMAT}}": settings.FASHN_OUTPUT_FORMAT,
-        "{{RETURN_BASE64}}": settings.FASHN_RETURN_BASE64,
-        "{{MODEL_NAME}}": settings.FASHN_MODEL_NAME,
-        "{{GENERATION_MODE}}": settings.FASHN_GENERATION_MODE,
-        "{{RESOLUTION}}": settings.FASHN_RESOLUTION,
-        "{{PROMPT}}": prompt or "",
-    }
-
-    if template:
-        payload = json.loads(template)
-        return _replace_fashn_template_placeholders(payload, replacements)
-
-    model_name = settings.FASHN_MODEL_NAME.strip()
-    normalized_model_name = model_name.lower()
-    if normalized_model_name in {"tryon-max", "try-on-max", "product-to-model"}:
-        payload = {
-            "model_name": model_name,
-            "inputs": {
-                "model_image": replacements["{{MODEL_IMAGE}}"],
-                "product_image": replacements["{{PRODUCT_IMAGE}}"],
-                "output_format": settings.FASHN_OUTPUT_FORMAT,
-                "return_base64": settings.FASHN_RETURN_BASE64,
-            },
-        }
-        if settings.FASHN_GENERATION_MODE.strip():
-            payload["inputs"]["generation_mode"] = settings.FASHN_GENERATION_MODE.strip()
-        if settings.FASHN_RESOLUTION.strip():
-            payload["inputs"]["resolution"] = settings.FASHN_RESOLUTION.strip()
-        if settings.FASHN_SEED is not None:
-            payload["inputs"]["seed"] = settings.FASHN_SEED
-        if settings.FASHN_NUM_SAMPLES > 0:
-            payload["inputs"]["num_images"] = settings.FASHN_NUM_SAMPLES
-        if prompt:
-            payload["inputs"]["prompt"] = prompt
-        return payload
-
+    model_name = "tryon-v1.6"
     payload = {
         "model_name": model_name,
         "inputs": {
-            "model_image": replacements["{{MODEL_IMAGE}}"],
-            "garment_image": replacements["{{GARMENT_IMAGE}}"],
+            "model_image": _image_to_data_url(model_image_path),
+            "garment_image": _image_to_data_url(garment_image_path),
             "category": request_category,
             "garment_photo_type": garment_photo_type,
             "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
@@ -773,63 +719,30 @@ def _build_fashn_payload(
     return payload
 
 
-def _generate_fashn_prompt(garment_image_path: Path) -> Optional[str]:
-    if not settings.OPENAI_API_KEY.strip():
-        logger.warning("OPENAI_API_KEY is not configured. Using fallback garment prompt.")
-        return "clothing item"
-
-    garment_image_reference = _image_to_data_url(garment_image_path)
-    try:
-        prompt = generate_prompt_from_image(garment_image_reference)
-    except Exception as exc:
-        logger.warning("OpenAI garment prompt generation failed. Using fallback prompt. error=%s", exc)
-        return "clothing item"
-    return prompt or "clothing item"
-
-
 def _fashn_request_category(category_code: str) -> str:
     normalized = category_code.strip().lower()
-    model_name = settings.FASHN_MODEL_NAME.strip().lower()
-    if model_name in {"tryon-v1.6", "tryon_v1_6", "tryon-v1-6"}:
-        mapping = {
-            "top": "tops",
-            "tops": "tops",
-            "tshirt": "tops",
-            "tee": "tops",
-            "shirt": "tops",
-            "hoodie": "tops",
-            "blouse": "tops",
-            "sweater": "tops",
-            "jacket": "tops",
-            "coat": "tops",
-            "bottom": "bottoms",
-            "bottoms": "bottoms",
-            "pants": "bottoms",
-            "trousers": "bottoms",
-            "jeans": "bottoms",
-            "skirt": "bottoms",
-            "shorts": "bottoms",
-            "dress": "one-pieces",
-            "jumpsuit": "one-pieces",
-            "one-piece": "one-pieces",
-            "one_pieces": "one-pieces",
-            "one-pieces": "one-pieces",
-        }
-        return mapping.get(normalized, normalized)
-    return normalized
-
-
-def _replace_fashn_template_placeholders(payload: object, replacements: dict[str, object]) -> object:
-    if isinstance(payload, dict):
-        return {key: _replace_fashn_template_placeholders(value, replacements) for key, value in payload.items()}
-    if isinstance(payload, list):
-        return [_replace_fashn_template_placeholders(item, replacements) for item in payload]
-    if isinstance(payload, str):
-        if payload in replacements:
-            return replacements[payload]
-        result = payload
-        for key, replacement in replacements.items():
-            replacement_text = replacement if isinstance(replacement, str) else json.dumps(replacement)
-            result = result.replace(key, replacement_text)
-        return result
-    return payload
+    mapping = {
+        "top": "tops",
+        "tops": "tops",
+        "tshirt": "tops",
+        "tee": "tops",
+        "shirt": "tops",
+        "hoodie": "tops",
+        "blouse": "tops",
+        "sweater": "tops",
+        "jacket": "tops",
+        "coat": "tops",
+        "bottom": "bottoms",
+        "bottoms": "bottoms",
+        "pants": "bottoms",
+        "trousers": "bottoms",
+        "jeans": "bottoms",
+        "skirt": "bottoms",
+        "shorts": "bottoms",
+        "dress": "one-pieces",
+        "jumpsuit": "one-pieces",
+        "one-piece": "one-pieces",
+        "one_pieces": "one-pieces",
+        "one-pieces": "one-pieces",
+    }
+    return mapping.get(normalized, normalized)

@@ -26,12 +26,11 @@ def health_check() -> dict:
         tryon_ready = bool(settings.FASHN_API_KEY.strip())
         payload["fashn"] = {
             "configured": tryon_ready,
-            "model_name": settings.FASHN_MODEL_NAME,
+            "model_name": "tryon-v1.6",
             "garment_photo_type": settings.FASHN_GARMENT_PHOTO_TYPE,
-            "generation_mode": settings.FASHN_GENERATION_MODE,
-            "resolution": settings.FASHN_RESOLUTION,
+            "mode": settings.FASHN_MODE,
             "output_format": settings.FASHN_OUTPUT_FORMAT,
-            "template_override_enabled": bool(settings.FASHN_REQUEST_TEMPLATE_JSON.strip()),
+            "template_override_enabled": False,
         }
     payload["tryon_ready"] = tryon_ready
     return payload
