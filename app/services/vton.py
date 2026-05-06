@@ -10,11 +10,12 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageOps
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -23,6 +24,18 @@ from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
 
 logger = logging.getLogger(__name__)
+
+JPEG_DATA_URL_PREFIX = "data:image/jpeg;base64,"
+MAX_NORMALIZED_DIMENSION = 768
+MIN_IMAGE_BASE64_LENGTH = 1024
+MIN_IMAGE_DIMENSION = 160
+MAX_IMAGE_ASPECT_RATIO = 4.0
+MAX_BACKGROUND_RATIO = 0.94
+MIN_FOREGROUND_RATIO = 0.08
+
+
+class InvalidTryOnImageError(ValueError):
+    pass
 
 
 @dataclass
@@ -385,9 +398,6 @@ def _run_fashn_pass(
         category_code=category_code,
         garment_photo_type=garment_photo_type,
     )
-    print("USING MODEL:", payload["model_name"])
-    print("USER IMAGE:", str(model_image_path))
-    print("GARMENT IMAGE:", str(garment_image_path))
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
         model_image_path=model_image_path,
@@ -399,16 +409,11 @@ def _run_fashn_pass(
     model_metadata = _image_metadata(model_image_path)
     garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s mode=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s model=%sx%s/%sB garment=%sx%s/%sB",
         debug_label,
         payload["model_name"],
         category_code,
         payload.get("inputs", {}).get("category"),
-        garment_photo_type,
-        settings.FASHN_MODE,
-        settings.FASHN_OUTPUT_FORMAT,
-        settings.FASHN_SEGMENTATION_FREE,
-        settings.FASHN_RETURN_BASE64,
         model_metadata["width"],
         model_metadata["height"],
         model_metadata["bytes"],
@@ -608,12 +613,6 @@ def _persist_fashn_debug_request(
                     "selected_category_code": selected_category_code,
                     "selected_garment_photo_type": selected_garment_photo_type,
                     "category": payload.get("inputs", {}).get("category"),
-                    "garment_photo_type": payload.get("inputs", {}).get("garment_photo_type"),
-                    "mode": payload.get("inputs", {}).get("mode"),
-                    "output_format": payload.get("inputs", {}).get("output_format"),
-                    "segmentation_free": payload.get("inputs", {}).get("segmentation_free"),
-                    "moderation_level": payload.get("inputs", {}).get("moderation_level"),
-                    "return_base64": payload.get("inputs", {}).get("return_base64"),
                     "seed": payload.get("inputs", {}).get("seed"),
                     "num_samples": payload.get("inputs", {}).get("num_samples"),
                 },
@@ -696,50 +695,137 @@ def _build_fashn_payload(
     category_code: str,
     garment_photo_type: str,
 ) -> dict:
+    _ = garment_photo_type
     mapped_category = map_category(category_code)
-    model_name = "tryon-v1.6"
+    model_image = _normalized_image_to_data_url(model_image_path)
+    garment_image = _normalized_image_to_data_url(garment_image_path)
+    payload = {
+        "model": "tryon-v1.6",
+        "category": mapped_category,
+        "model_image": model_image,
+        "garment_image": garment_image,
+    }
     print("USER CATEGORY:", category_code)
     print("MAPPED CATEGORY:", mapped_category)
-    payload = {
-        "model_name": model_name,
+    print("MODEL:", payload["model"])
+    print("CATEGORY:", payload["category"])
+    print("MODEL IMAGE SIZE:", len(model_image))
+    print("GARMENT IMAGE SIZE:", len(garment_image))
+
+    fashn_request = {
+        "model_name": payload["model"],
         "inputs": {
-            "model_image": _image_to_data_url(model_image_path),
-            "garment_image": _image_to_data_url(garment_image_path),
-            "category": mapped_category,
-            "garment_photo_type": garment_photo_type,
-            "segmentation_free": settings.FASHN_SEGMENTATION_FREE,
-            "moderation_level": settings.FASHN_MODERATION_LEVEL,
-            "mode": settings.FASHN_MODE,
-            "output_format": settings.FASHN_OUTPUT_FORMAT,
-            "return_base64": settings.FASHN_RETURN_BASE64,
+            "model_image": payload["model_image"],
+            "garment_image": payload["garment_image"],
+            "category": payload["category"],
         },
     }
     if settings.FASHN_SEED is not None:
-        payload["inputs"]["seed"] = settings.FASHN_SEED
+        fashn_request["inputs"]["seed"] = settings.FASHN_SEED
     if settings.FASHN_NUM_SAMPLES > 0:
-        payload["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
-    return payload
+        fashn_request["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
+    return fashn_request
 
 
 def map_category(user_category: str) -> str:
     normalized = user_category.strip().lower()
     mapping = {
-        "tricou": "tshirt",
-        "camasa": "shirt",
-        "geaca": "jacket",
-        "hanorac": "hoodie",
-        "fusta": "skirt",
+        "tricou": "upper_body",
+        "camasa": "upper_body",
+        "geaca": "upper_body",
+        "hanorac": "upper_body",
+        "blugi": "lower_body",
+        "pantaloni": "lower_body",
+        "fusta": "lower_body",
         "rochie": "dress",
-        "blugi": "jeans",
-        "pantaloni": "pants",
-        "tshirt": "tshirt",
-        "tee": "tshirt",
-        "shirt": "shirt",
-        "jacket": "jacket",
-        "hoodie": "hoodie",
-        "skirt": "skirt",
+        "tshirt": "upper_body",
+        "tee": "upper_body",
+        "shirt": "upper_body",
+        "jacket": "upper_body",
+        "hoodie": "upper_body",
+        "jeans": "lower_body",
+        "pants": "lower_body",
+        "skirt": "lower_body",
         "dress": "dress",
-        "jeans": "jeans",
-        "pants": "pants",
     }
-    return mapping.get(normalized, "tshirt")
+    return mapping.get(normalized, "upper_body")
+
+
+def validate_image(image_base64: str) -> bool:
+    try:
+        if not image_base64 or len(image_base64.strip()) < MIN_IMAGE_BASE64_LENGTH:
+            return False
+        image = _open_base64_image(image_base64)
+        width, height = image.size
+        if width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION:
+            return False
+        shorter_side = max(1, min(width, height))
+        aspect_ratio = max(width, height) / shorter_side
+        if aspect_ratio > MAX_IMAGE_ASPECT_RATIO:
+            return False
+        background_ratio, foreground_ratio = _estimate_image_content(image)
+        if background_ratio > MAX_BACKGROUND_RATIO:
+            return False
+        if foreground_ratio < MIN_FOREGROUND_RATIO:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def normalize_image(image_base64: str) -> str:
+    image = _open_base64_image(image_base64).convert("RGB")
+    if max(image.size) > MAX_NORMALIZED_DIMENSION:
+        image.thumbnail((MAX_NORMALIZED_DIMENSION, MAX_NORMALIZED_DIMENSION), _resampling_filter())
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=95, optimize=True)
+    return JPEG_DATA_URL_PREFIX + base64.b64encode(output.getvalue()).decode("utf-8")
+
+
+def _normalized_image_to_data_url(path: Path) -> str:
+    raw_image = _image_to_data_url(path)
+    if not validate_image(raw_image):
+        raise InvalidTryOnImageError("Invalid image. Please upload a clearer photo.")
+    normalized_image = normalize_image(raw_image)
+    if not validate_image(normalized_image):
+        raise InvalidTryOnImageError("Invalid image. Please upload a clearer photo.")
+    return normalized_image
+
+
+def _open_base64_image(image_base64: str) -> Image.Image:
+    encoded = image_base64.split(",", 1)[1] if "," in image_base64 else image_base64
+    image = Image.open(BytesIO(base64.b64decode(encoded)))
+    image.load()
+    return ImageOps.exif_transpose(image)
+
+
+def _estimate_image_content(image: Image.Image) -> tuple[float, float]:
+    preview = image.convert("RGB")
+    preview.thumbnail((128, 128), _resampling_filter())
+    width, height = preview.size
+    if width == 0 or height == 0:
+        return 1.0, 0.0
+
+    corners = [
+        preview.getpixel((0, 0)),
+        preview.getpixel((max(width - 1, 0), 0)),
+        preview.getpixel((0, max(height - 1, 0))),
+        preview.getpixel((max(width - 1, 0), max(height - 1, 0))),
+    ]
+    background = tuple(sum(channel) // len(corners) for channel in zip(*corners))
+    tolerance = 36
+    total_pixels = width * height
+    similar_pixels = 0
+    foreground_pixels = 0
+    for pixel in preview.getdata():
+        if all(abs(pixel[index] - background[index]) <= tolerance for index in range(3)):
+            similar_pixels += 1
+        else:
+            foreground_pixels += 1
+    return similar_pixels / total_pixels, foreground_pixels / total_pixels
+
+
+def _resampling_filter() -> int:
+    if hasattr(Image, "Resampling"):
+        return Image.Resampling.LANCZOS
+    return Image.LANCZOS

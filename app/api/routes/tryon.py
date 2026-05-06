@@ -16,7 +16,7 @@ from app.services.catvton_runtime import get_catvton_runtime_status, request_cat
 from app.services.auth import get_current_user, get_or_create_guest_user
 from app.services.tryon import create_garment_asset, create_tryon_job, save_upload_file_with_metrics
 from app.services.video_jobs import owner_key_for_user, schedule_video_job, video_job_store
-from app.services.vton import generate_video_from_result_image_with_metrics, run_tryon_job_with_metrics
+from app.services.vton import InvalidTryOnImageError, generate_video_from_result_image_with_metrics, run_tryon_job_with_metrics
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -180,14 +180,17 @@ async def _create_job_for_user(
     db.commit()
 
     job = create_tryon_job(db, current_user, person_path, upper_asset, lower_asset)
-    job, runtime_performance = run_tryon_job_with_metrics(
-        db,
-        job,
-        upper_category_code=upper_category_code,
-        lower_category_code=lower_category_code,
-        upper_garment_photo_type=upper_garment_photo_type,
-        lower_garment_photo_type=lower_garment_photo_type,
-    )
+    try:
+        job, runtime_performance = run_tryon_job_with_metrics(
+            db,
+            job,
+            upper_category_code=upper_category_code,
+            lower_category_code=lower_category_code,
+            upper_garment_photo_type=upper_garment_photo_type,
+            lower_garment_photo_type=lower_garment_photo_type,
+        )
+    except InvalidTryOnImageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     total_ms = int((time.monotonic() - request_started) * 1000)
     performance = OperationPerformanceRead(
         upload_bytes=upload_bytes,
