@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     FASHN_REQUEST_TEMPLATE_JSON: str = ""
     FASHN_DEBUG_SAVE_REQUESTS: bool = True
 
+    OPENAI_API_KEY: str = ""
+    EXTERNAL_TRYON_API_URL: str = "https://example.com/virtual-tryon"
+
     MODEL_COMMAND_TEMPLATE: str = ""
     MODEL_COMMAND_WORKDIR: str = ""
 

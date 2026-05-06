@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.models.garment_asset import GarmentAsset
 from app.models.tryon_job import TryOnJob
 from app.services.catvton_runtime import get_catvton_runtime
+from app.services.openai_vision import generate_prompt_from_image
 
 logger = logging.getLogger(__name__)
 
@@ -379,11 +380,13 @@ def _run_fashn_pass(
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
         "Content-Type": "application/json",
     }
+    generated_prompt = _generate_fashn_prompt(garment_image_path)
     payload = _build_fashn_payload(
         model_image_path=model_image_path,
         garment_image_path=garment_image_path,
         category_code=category_code,
         garment_photo_type=garment_photo_type,
+        prompt=generated_prompt,
     )
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
@@ -392,16 +395,18 @@ def _run_fashn_pass(
         payload=payload,
         selected_category_code=category_code,
         selected_garment_photo_type=garment_photo_type,
+        generated_prompt=generated_prompt,
     )
     model_metadata = _image_metadata(model_image_path)
     garment_metadata = _image_metadata(garment_image_path)
     logger.info(
-        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
+        "fashn-request label=%s model_name=%s selected_category_code=%s request_category=%s garment_photo_type=%s prompt=%s mode=%s generation_mode=%s resolution=%s output_format=%s segmentation_free=%s return_base64=%s model=%sx%s/%sB garment=%sx%s/%sB",
         debug_label,
         settings.FASHN_MODEL_NAME,
         category_code,
         payload.get("inputs", {}).get("category"),
         garment_photo_type,
+        generated_prompt,
         settings.FASHN_MODE,
         payload.get("inputs", {}).get("generation_mode"),
         payload.get("inputs", {}).get("resolution"),
@@ -584,6 +589,7 @@ def _persist_fashn_debug_request(
     payload: dict,
     selected_category_code: str,
     selected_garment_photo_type: str,
+    generated_prompt: Optional[str],
 ) -> Optional[Path]:
     if not settings.FASHN_DEBUG_SAVE_REQUESTS:
         return None
@@ -606,8 +612,10 @@ def _persist_fashn_debug_request(
                     "model_name": payload.get("model_name"),
                     "selected_category_code": selected_category_code,
                     "selected_garment_photo_type": selected_garment_photo_type,
+                    "generated_prompt": generated_prompt,
                     "category": payload.get("inputs", {}).get("category"),
                     "garment_photo_type": payload.get("inputs", {}).get("garment_photo_type"),
+                    "prompt": payload.get("inputs", {}).get("prompt"),
                     "mode": payload.get("inputs", {}).get("mode"),
                     "generation_mode": payload.get("inputs", {}).get("generation_mode"),
                     "resolution": payload.get("inputs", {}).get("resolution"),
@@ -697,6 +705,7 @@ def _build_fashn_payload(
     garment_image_path: Path,
     category_code: str,
     garment_photo_type: str,
+    prompt: Optional[str],
 ) -> dict:
     request_category = _fashn_request_category(category_code)
     template = settings.FASHN_REQUEST_TEMPLATE_JSON.strip()
@@ -712,6 +721,7 @@ def _build_fashn_payload(
         "{{MODEL_NAME}}": settings.FASHN_MODEL_NAME,
         "{{GENERATION_MODE}}": settings.FASHN_GENERATION_MODE,
         "{{RESOLUTION}}": settings.FASHN_RESOLUTION,
+        "{{PROMPT}}": prompt or "",
     }
 
     if template:
@@ -738,6 +748,8 @@ def _build_fashn_payload(
             payload["inputs"]["seed"] = settings.FASHN_SEED
         if settings.FASHN_NUM_SAMPLES > 0:
             payload["inputs"]["num_images"] = settings.FASHN_NUM_SAMPLES
+        if prompt:
+            payload["inputs"]["prompt"] = prompt
         return payload
 
     payload = {
@@ -758,7 +770,23 @@ def _build_fashn_payload(
         payload["inputs"]["seed"] = settings.FASHN_SEED
     if settings.FASHN_NUM_SAMPLES > 0:
         payload["inputs"]["num_samples"] = settings.FASHN_NUM_SAMPLES
+    if prompt:
+        payload["inputs"]["prompt"] = prompt
     return payload
+
+
+def _generate_fashn_prompt(garment_image_path: Path) -> Optional[str]:
+    if not settings.OPENAI_API_KEY.strip():
+        logger.warning("OPENAI_API_KEY is not configured. Using fallback garment prompt.")
+        return "clothing item"
+
+    garment_image_reference = _image_to_data_url(garment_image_path)
+    try:
+        prompt = generate_prompt_from_image(garment_image_reference)
+    except Exception as exc:
+        logger.warning("OpenAI garment prompt generation failed. Using fallback prompt. error=%s", exc)
+        return "clothing item"
+    return prompt or "clothing item"
 
 
 def _fashn_request_category(category_code: str) -> str:
