@@ -96,6 +96,7 @@ async def _create_job_for_user(
     upper_garment_photo_type: Optional[str],
     lower_garment_photo_type: Optional[str],
     generation_tier: Optional[str],
+    user_selected_color: Optional[str],
 ) -> TryOnJobRead:
     if not upper_garment_image and not lower_garment_image:
         raise HTTPException(status_code=400, detail="At least one garment image is required.")
@@ -190,6 +191,7 @@ async def _create_job_for_user(
             upper_garment_photo_type=upper_garment_photo_type,
             lower_garment_photo_type=lower_garment_photo_type,
             generation_tier=generation_tier,
+            user_selected_color=user_selected_color,
         )
     except InvalidTryOnImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -332,6 +334,7 @@ async def create_job(
     upper_garment_photo_type: Optional[str] = Form(None),
     lower_garment_photo_type: Optional[str] = Form(None),
     generation_tier: Optional[str] = Form(None),
+    user_selected_color: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> TryOnJobRead:
@@ -349,6 +352,7 @@ async def create_job(
         upper_garment_photo_type=upper_garment_photo_type,
         lower_garment_photo_type=lower_garment_photo_type,
         generation_tier=generation_tier,
+        user_selected_color=user_selected_color,
     )
 
 
@@ -365,6 +369,7 @@ async def create_guest_job(
     upper_garment_photo_type: Optional[str] = Form(None),
     lower_garment_photo_type: Optional[str] = Form(None),
     generation_tier: Optional[str] = Form(None),
+    user_selected_color: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> TryOnJobRead:
     guest_user = get_or_create_guest_user(db)
@@ -382,6 +387,7 @@ async def create_guest_job(
         upper_garment_photo_type=upper_garment_photo_type,
         lower_garment_photo_type=lower_garment_photo_type,
         generation_tier=generation_tier,
+        user_selected_color=user_selected_color,
     )
 
 

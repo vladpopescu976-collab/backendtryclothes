@@ -59,6 +59,7 @@ class TryOnRoutingMetadata:
     normalized_fashn_category: str | None = None
     fashn_job_id: str | None = None
     generated_prompt: str | None = None
+    user_selected_color: str | None = None
 
 
 @dataclass
@@ -152,6 +153,7 @@ def run_tryon_job_with_metrics(
     upper_garment_photo_type: Optional[str] = None,
     lower_garment_photo_type: Optional[str] = None,
     generation_tier: Optional[str] = None,
+    user_selected_color: Optional[str] = None,
 ) -> tuple[TryOnJob, OperationPerformance, TryOnRoutingMetadata | None]:
     upper_asset = _get_asset(db, job.upper_garment_asset_id)
     lower_asset = _get_asset(db, job.lower_garment_asset_id)
@@ -173,6 +175,7 @@ def run_tryon_job_with_metrics(
                 upper_garment_photo_type=upper_garment_photo_type,
                 lower_garment_photo_type=lower_garment_photo_type,
                 requested_generation_tier=generation_tier,
+                user_selected_color=user_selected_color,
             )
         elif settings.TRYON_PROVIDER == "catvton":
             provider_outcome = TryOnProviderOutcome(
@@ -346,6 +349,7 @@ def _run_fashn_two_pass(
     upper_garment_photo_type: Optional[str] = None,
     lower_garment_photo_type: Optional[str] = None,
     requested_generation_tier: Optional[str] = None,
+    user_selected_color: Optional[str] = None,
 ) -> TryOnProviderOutcome:
     if not settings.FASHN_API_KEY:
         raise RuntimeError("FASHN_API_KEY is not configured.")
@@ -366,6 +370,7 @@ def _run_fashn_two_pass(
             requested_generation_tier=requested_generation_tier,
             user_id=job.user_id,
             generation_id=job.id,
+            user_selected_color=user_selected_color,
         )
         current_image_path = upper_outcome.result_path
         if upper_outcome.metadata:
@@ -385,6 +390,7 @@ def _run_fashn_two_pass(
             requested_generation_tier=requested_generation_tier,
             user_id=job.user_id,
             generation_id=job.id,
+            user_selected_color=user_selected_color,
         )
         current_image_path = lower_outcome.result_path
         if lower_outcome.metadata:
@@ -475,6 +481,7 @@ def _run_fashn_pass(
     requested_generation_tier: Optional[str],
     user_id: str,
     generation_id: str,
+    user_selected_color: Optional[str],
 ) -> TryOnProviderOutcome:
     headers = {
         "Authorization": f"Bearer {settings.FASHN_API_KEY}",
@@ -486,9 +493,11 @@ def _run_fashn_pass(
         category_code=category_code,
         garment_photo_type=garment_photo_type,
         requested_generation_tier=requested_generation_tier,
+        user_selected_color=user_selected_color,
     )
     payload = build_result.payload
     routing_metadata = build_result.routing_metadata
+    redacted_payload = _redacted_payload(payload, build_result.model_image, build_result.garment_image)
     debug_directory = _persist_fashn_debug_request(
         debug_label=debug_label,
         model_image_path=model_image_path,
@@ -544,11 +553,19 @@ def _run_fashn_pass(
     logger.info(
         "FASHN_DEBUG payload=%s",
         json.dumps(
-            _redacted_payload(payload, build_result.model_image, build_result.garment_image),
+            redacted_payload,
             sort_keys=True,
             ensure_ascii=False,
         ),
     )
+    if routing_metadata.final_generation_tier == GenerationTier.premium.value:
+        logger.info(
+            "FASHN_DEBUG premium_prompt category=%s generatedPrompt=%s userSelectedColor=%s finalPayload=%s",
+            routing_metadata.category,
+            routing_metadata.generated_prompt or "",
+            routing_metadata.user_selected_color or "",
+            json.dumps(redacted_payload, sort_keys=True, ensure_ascii=False),
+        )
 
     with httpx.Client(timeout=settings.TRYON_TIMEOUT_SECONDS) as client:
         response = client.post(f"{settings.FASHN_BASE_URL}/run", headers=headers, json=payload)
@@ -783,6 +800,7 @@ def _persist_fashn_debug_request(
                     "forced_premium": routing_metadata.forced_premium,
                     "premium_recommended": routing_metadata.premium_recommended,
                     "generated_prompt": routing_metadata.generated_prompt,
+                    "user_selected_color": routing_metadata.user_selected_color,
                     "seed": payload.get("inputs", {}).get("seed"),
                     "num_samples": payload.get("inputs", {}).get("num_samples"),
                     "generation_mode": payload.get("inputs", {}).get("generation_mode"),
@@ -884,6 +902,7 @@ def _aggregate_routing_metadata(metadata_items: list[TryOnRoutingMetadata]) -> T
         normalized_fashn_category="multiple",
         fashn_job_id=metadata_items[-1].fashn_job_id,
         generated_prompt=None,
+        user_selected_color=next((item.user_selected_color for item in metadata_items if item.user_selected_color), None),
     )
 
 
@@ -894,6 +913,7 @@ def _build_fashn_payload(
     category_code: str,
     garment_photo_type: str,
     requested_generation_tier: Optional[str],
+    user_selected_color: Optional[str],
 ) -> FashnPayloadBuildResult:
     try:
         routing_decision = resolve_tryon_routing(
@@ -915,12 +935,17 @@ def _build_fashn_payload(
         forced_premium=routing_decision.force_premium,
         premium_recommended=routing_decision.premium_recommended,
         category=routing_decision.user_category,
+        user_selected_color=(user_selected_color or "").strip() or None,
     )
 
     if routing_decision.final_generation_tier == GenerationTier.premium:
         premium_category = validate_premium_category(routing_decision.premium_category)
         metadata.normalized_fashn_category = premium_category
-        prompt_outcome = generate_premium_garment_prompt(garment_image.data_url, routing_decision.user_category)
+        prompt_outcome = generate_premium_garment_prompt(
+            garment_image.data_url,
+            routing_decision.user_category,
+            user_selected_color=metadata.user_selected_color,
+        )
         metadata.openai_analysis_success = prompt_outcome.openai_analysis_success
         metadata.fallback_used = prompt_outcome.fallback_used
         metadata.generated_prompt = prompt_outcome.prompt
