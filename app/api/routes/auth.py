@@ -11,6 +11,7 @@ from app.core.security import create_access_token
 from app.db.session import get_db
 from app.schemas.common import MessageResponse
 from app.schemas.auth import (
+    AppleSignInRequest,
     ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
@@ -21,6 +22,7 @@ from app.schemas.auth import (
     TokenResponse,
     VerifyEmailRequest,
 )
+from app.services.apple_sign_in import verify_apple_identity_token
 from app.services.auth import (
     authenticate_user,
     create_guest_session_user,
@@ -90,12 +92,34 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
 
 @router.post("/social", response_model=TokenResponse)
 def social_login(payload: SocialLoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Generic social login is no longer available. Use Apple Sign In.",
+    )
+
+
+@router.post("/apple", response_model=TokenResponse)
+def apple_login(payload: AppleSignInRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    verified_identity = verify_apple_identity_token(
+        payload.identity_token,
+        expected_user_identifier=payload.user_identifier,
+    )
+    display_name = payload.display_name
+    if not display_name:
+        name_parts = [payload.first_name, payload.last_name]
+        display_name = " ".join(part for part in name_parts if part)
+        display_name = display_name or None
+
+    # The authorization code is received and normalized here so the backend is ready for
+    # future server-side Apple code exchange flows, while identity_token remains the primary proof.
+    _ = payload.authorization_code
+
     user = get_or_create_social_user(
         db,
-        provider=payload.provider,
-        provider_subject=payload.provider_subject,
-        email=payload.email,
-        display_name=payload.display_name,
+        provider="apple",
+        provider_subject=verified_identity.subject,
+        email=verified_identity.email or payload.email,
+        display_name=display_name,
     )
     token = create_access_token(user.id, timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     return TokenResponse(access_token=token, user=user)

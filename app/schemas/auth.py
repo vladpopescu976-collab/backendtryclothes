@@ -44,9 +44,27 @@ class SocialLoginRequest(BaseModel):
     @classmethod
     def normalize_provider(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"apple", "google"}:
+        if normalized not in {"apple"}:
             raise ValueError("Unsupported social auth provider.")
         return normalized
+
+
+class AppleSignInRequest(BaseModel):
+    user_identifier: str = Field(min_length=3, max_length=255)
+    identity_token: str = Field(min_length=32, max_length=8192)
+    authorization_code: str = Field(min_length=3, max_length=2048)
+    email: Optional[EmailStr] = None
+    first_name: Optional[str] = Field(default=None, max_length=120)
+    last_name: Optional[str] = Field(default=None, max_length=120)
+    display_name: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("user_identifier", "identity_token", "authorization_code", "first_name", "last_name", "display_name")
+    @classmethod
+    def normalize_strings(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = " ".join(value.strip().split())
+        return normalized or None
 
 
 class TokenResponse(BaseModel):

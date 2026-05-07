@@ -66,6 +66,8 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
     EXTERNAL_TRYON_API_URL: str = "https://example.com/virtual-tryon"
+    APPLE_SIGN_IN_AUDIENCES: str = "n.TryClothesMVP"
+    APPLE_JWKS_URL: str = "https://appleid.apple.com/auth/keys"
 
     MODEL_COMMAND_TEMPLATE: str = ""
     MODEL_COMMAND_WORKDIR: str = ""
@@ -154,6 +156,14 @@ class Settings(BaseSettings):
         if self.MODEL_COMMAND_WORKDIR:
             return Path(self.MODEL_COMMAND_WORKDIR).expanduser()
         return self.base_dir
+
+    @property
+    def apple_sign_in_audiences(self) -> List[str]:
+        return [
+            audience.strip()
+            for audience in self.APPLE_SIGN_IN_AUDIENCES.split(",")
+            if audience.strip()
+        ]
 
     @property
     def catvton_project_dir(self) -> Path:
