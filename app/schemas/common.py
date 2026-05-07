@@ -42,6 +42,7 @@ class UserRead(APIModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     display_name: Optional[str] = None
+    avatar_image_url: Optional[str] = None
     email: EmailStr
     is_active: bool
     email_verified: bool

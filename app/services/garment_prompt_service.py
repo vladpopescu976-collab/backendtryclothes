@@ -82,7 +82,11 @@ def generate_premium_garment_prompt(image_reference: str, user_category: str) ->
         )
         return GarmentPromptOutcome(prompt=prompt, openai_analysis_success=True, fallback_used=False)
     except Exception as exc:  # pragma: no cover - external provider fallback
-        logger.warning("premium-prompt fallback category=%s error=%s", user_category, exc)
+        logger.warning(
+            "premium-prompt fallback category=%s error_type=%s",
+            user_category,
+            type(exc).__name__,
+        )
         logger.info(
             'PREMIUM_PROMPT_DEBUG generated_prompt="%s" response_ms=%s total_tokens=%s output_words=%s output_chars=%s fallback_used=%s',
             fallback_prompt,
