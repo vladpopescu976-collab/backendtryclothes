@@ -1,230 +1,272 @@
-# TryClothes RunPod Backend
+# TryClothes Backend
 
-Creat de Vlad Popescu.
+Backend-ul din repo-ul ăsta este API-ul care ține în viață aplicația TryClothes: autentificare, profil user, upload-uri, virtual try-on, photo-to-video, health checks și integrarea cu FASHN.
 
-Acest folder este backend-ul public pentru `TryClothes`, pregătit în primul rând pentru integrarea cu `FASHN AI`.
+În momentul ăsta, producția rulează pe un VPS Ubuntu, în spatele unui `nginx`, cu `systemd`, certificat SSL și bază de date PostgreSQL în Supabase.
 
-Acum repo-ul este optimizat pentru:
+## Ce este în repo
 
-- FastAPI
-- login / create account / email verification
-- stylist AI light
-- fit + brands
-- virtual try-on prin `FASHN API`
-- deploy simplu pe RunPod Serverless sau pe orice host CPU
+Stack-ul actual este simplu și destul de pragmatic:
 
-## Ce pui pe GitHub
+- `FastAPI`
+- `SQLAlchemy`
+- `Alembic`
+- `psycopg` v3
+- `Pillow`
+- `httpx`
+- `FASHN API` pentru try-on și image-to-video
+- `OpenAI` doar pentru prompturile Premium
+- `Resend` sau `SMTP` pentru email
 
-Urcă exact conținutul acestui folder:
+Repo-ul nu conține chei, fișiere de storage sau date de producție. Astea stau în `.env`, în baza de date și în directoarele locale de storage de pe server.
 
-`/Users/vladpopescu/Documents/New project/tryclothes-runpod-backend`
+## Ce face backend-ul acum
+
+### Autentificare și user
+
+- login cu email + parolă
+- register cu verificare pe email
+- resend verification
+- reset password
+- Sign in with Apple pe backend
+- profil user
+- avatar upload / delete
+
+### Try-on
+
+Sunt două moduri de generare:
+
+#### Standard
+
+- model: `tryon-v1.6`
+- rapid și mai ieftin
+- fără OpenAI
+- fără prompturi descriptive
+- folosește mapping simplu de categorie pentru FASHN
+- păstrează imaginea la calitate mare
+
+#### Premium
+
+- model: `tryon-max`
+- configurat cu:
+  - `resolution = 1k`
+  - `generation_mode = balanced`
+  - `num_images = 1`
+- folosește OpenAI pentru a genera un prompt scurt, neutru și orientat pe reconstrucție
+- culoarea nu mai este inventată din prompt
+- imaginea hainei rămâne sursa de adevăr pentru culoare
+
+### Photo to Video
+
+- folosește endpoint-ul image-to-video din FASHN
+- pornește de la rezultatul final al try-on-ului
+- întoarce URL-ul video și metrici de procesare
+
+## Ce există important în flow-ul de try-on
+
+În backend, job-ul de try-on se creează rapid, iar generarea se execută în background. Asta înseamnă că aplicația primește imediat `job_id`, iar apoi face polling până când rezultatul este gata.
+
+Pe scurt:
+
+1. aplicația încarcă poza cu persoana
+2. aplicația încarcă poza hainei
+3. backend-ul validează și salvează fișierele
+4. backend-ul creează job-ul
+5. job-ul este executat în background
+6. aplicația întreabă periodic status-ul job-ului
+7. când FASHN termină, backend-ul descarcă / persistă rezultatul și îl servește aplicației
+
+## Ce am optimizat deja
+
+Backend-ul actual nu mai este în stadiul de MVP brut. Sunt deja făcute câteva optimizări care contează:
+
+- job creation răspunde repede, iar execuția continuă în background
+- Standard și Premium sunt rutate separat, clar
+- imaginile pentru FASHN sunt păstrate la calitate mare
+- pentru Premium, analiza OpenAI nu mai folosește inutil aceeași imagine mare care pleacă la FASHN
+- prompturile Premium sunt cache-uite pe combinația:
+  - hash imagine
+  - categorie
+  - culoare selectată de user, dacă există
+- polling-ul către FASHN este mai agresiv decât la început
+- răspunsul final de la FASHN nu mai este cerut ca base64 uriaș dacă un URL este suficient
+- există debug logs destul de clare pentru payload, hash-uri și timpi
+
+## Endpoint-uri utile
+
+### Health
+
+- `GET /api/v1/health`
+- `GET /ping`
+
+### Auth
+
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/verify-email`
+- `POST /api/v1/auth/resend-verification`
+- `POST /api/v1/auth/forgot-password`
+- `POST /api/v1/auth/reset-password`
+- `POST /api/v1/auth/apple`
+
+### User
+
+- `GET /api/v1/me`
+- `PUT /api/v1/me/body-profile`
+- `PUT /api/v1/me/avatar`
+- `DELETE /api/v1/me/avatar`
+
+### Fit / stylist / brand data
+
+- `GET /api/v1/brands`
+- `GET /api/v1/categories`
+- `POST /api/v1/fit/predict`
+- `POST /api/v1/stylist/recommend`
+
+### Try-on
+
+- `POST /api/v1/tryon/jobs`
+- `POST /api/v1/tryon/guest/jobs`
+- `GET /api/v1/tryon/jobs/{job_id}`
+- `GET /api/v1/tryon/jobs/{job_id}/result`
+- `GET /api/v1/tryon/guest/jobs/{job_id}`
+- `GET /api/v1/tryon/guest/jobs/{job_id}/result`
+- `GET /api/v1/tryon/warmup`
+- `POST /api/v1/tryon/warmup`
+- `POST /api/v1/tryon/video`
+- `POST /api/v1/tryon/guest/video`
+- `POST /api/v1/tryon/video/jobs`
+- `GET /api/v1/tryon/video/jobs/{job_id}`
+- `POST /api/v1/tryon/guest/video/jobs`
+- `GET /api/v1/tryon/guest/video/jobs/{job_id}`
+
+## Structura repo-ului
+
+Ce merită să știi când intri în repo:
+
+- `app/api/routes/`
+  - endpoint-urile FastAPI
+- `app/services/`
+  - logica reală de business
+- `app/models/`
+  - modelele SQLAlchemy
+- `app/schemas/`
+  - request / response schemas
+- `alembic/`
+  - migrațiile de DB
+- `storage/`
+  - fișiere locale generate în development sau pe server
+- `start-server.sh`
+  - script simplu de pornire care rulează și migrațiile
+
+## Variabile de mediu importante
+
+Poți porni local folosind `.env.example`, dar în practică cele mai importante variabile sunt astea:
+
+```env
+APP_ENV=production
+DEBUG=false
+APP_PUBLIC_BASE_URL=https://try-clothes.com
+
+DATABASE_URL=postgresql+psycopg://...
+SECRET_KEY=...
+
+EMAIL_DELIVERY_MODE=resend
+EMAIL_FROM=TryClothes <noreply@yourdomain.com>
+EMAIL_FROM_NAME=TryClothes
+RESEND_API_KEY=...
+
+TRYON_PROVIDER=fashn_api
+FASHN_API_KEY=...
+FASHN_BASE_URL=https://api.fashn.ai/v1
+
+OPENAI_API_KEY=...
+APPLE_SIGN_IN_AUDIENCES=n.TryClothesMVP
+```
+
+Dacă folosești Supabase pooler / PgBouncer, nu pune parametri de prepared statements în `DATABASE_URL`. Fixul este deja în cod, în `create_engine(..., connect_args={"prepare_threshold": None})`.
+
+## Cum pornești local
+
+Varianta simplă:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+python3 -m alembic upgrade head
+python3 -m uvicorn app.main:app --reload
+```
+
+Sau poți folosi scriptul:
+
+```bash
+./start-server.sh
+```
+
+Scriptul:
+
+- pregătește cache-urile temporare
+- rulează `alembic upgrade head`
+- pornește `uvicorn`
+
+## Deploy-ul care rulează acum
+
+În momentul ăsta, backend-ul live este servit pe:
+
+- [https://try-clothes.com](https://try-clothes.com)
+
+Setup-ul de producție este:
+
+- Ubuntu 24.04
+- `systemd` pentru procesul backend
+- `nginx` ca reverse proxy
+- `Let's Encrypt` pentru SSL
+- Supabase PostgreSQL
+
+Flow-ul de deploy pe server este clasic:
+
+1. `git pull`
+2. activezi / verifici `.env`
+3. `systemctl restart tryclothes-backend`
+4. verifici:
+   - `journalctl -u tryclothes-backend.service`
+   - `https://try-clothes.com/api/v1/health`
+
+## Ce să nu urci pe GitHub
 
 Nu urca:
 
 - `.env`
 - `.venv`
 - `storage/`
-- baze de date locale
-- imagini generate
-- cache-uri locale
+- fișiere generate local
+- cache-uri
 - chei API
+- date brute de debug din producție
 
-## Ce face backend-ul
-
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/verify-email`
-- `POST /api/v1/auth/resend-verification`
-- `POST /api/v1/stylist/recommend`
-- `POST /api/v1/fit/predict`
-- `POST /api/v1/tryon/jobs`
-- `POST /api/v1/tryon/guest/jobs`
-- `GET /api/v1/tryon/jobs/{job_id}`
-- `GET /api/v1/tryon/jobs/{job_id}/result`
-- `GET /api/v1/health`
-- `GET /ping`
-
-## Flow-ul corect pentru aplicație
-
-1. aplicația face login sau guest login
-2. userul încarcă poza cu el
-3. userul încarcă poza cu haina
-4. aplicația trimite fișierele la backend
-5. backend-ul vorbește cu `FASHN AI`
-6. backend-ul salvează job-ul și rezultatul
-7. aplicația cere rezultatul final și îl afișează
-
-Important:
+## Câteva note practice
 
 - cheia `FASHN_API_KEY` stă doar pe backend
-- aplicația iOS nu trebuie să vorbească direct cu FASHN
+- cheia `OPENAI_API_KEY` stă doar pe backend
+- aplicația iOS nu trebuie să vorbească direct nici cu FASHN, nici cu OpenAI
+- pentru Premium, promptul este doar un ajutor de reconstrucție, nu sursa adevărului pentru culoare
+- imaginea hainei rămâne sursa reală pentru culoare și textură
+- `dress / rochie` este forțat intern pe Premium
 
-## Variabile obligatorii
+## Dacă ceva se strică, verifică în ordinea asta
 
-Pentru FASHN-first deploy, folosește aceste valori:
+1. `GET /api/v1/health`
+2. logurile `systemd`
+3. `DATABASE_URL`
+4. `FASHN_API_KEY`
+5. `OPENAI_API_KEY`
+6. migrațiile Alembic
 
-```env
-APP_ENV=production
-DEBUG=false
-PROJECT_NAME=TryClothes Backend
-API_V1_PREFIX=/api/v1
+De obicei, când apare o problemă în producție, una dintre astea e cauza reală.
 
-SECRET_KEY=replace-with-a-long-random-secret
-APP_PUBLIC_BASE_URL=https://your-runpod-endpoint-url
-DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
+## Licență
 
-EMAIL_DELIVERY_MODE=resend
-EMAIL_FROM=TryClothes <noreply@yourdomain.com>
-EMAIL_FROM_NAME=TryClothes
-RESEND_API_KEY=replace-with-your-resend-api-key
-
-TRYON_PROVIDER=fashn_api
-FASHN_API_KEY=replace-with-your-fashn-api-key
-FASHN_BASE_URL=https://api.fashn.ai/v1
-FASHN_MODEL_NAME=tryon-v1.6
-FASHN_GARMENT_PHOTO_TYPE=flat-lay
-FASHN_OUTPUT_FORMAT=png
-FASHN_SEGMENTATION_FREE=true
-FASHN_MODERATION_LEVEL=permissive
-FASHN_RETURN_BASE64=true
-
-PORT=8000
-PORT_HEALTH=8000
-```
-
-Vezi și:
-
-- `.env.example`
-- `runpod.env.example`
-
-## Ce pui efectiv pe server
-
-Ai nevoie doar de:
-
-- acest repo
-- o bază de date externă PostgreSQL
-- `RESEND_API_KEY`
-- `FASHN_API_KEY`
-- domeniul/email-ul verificat în Resend
-
-Nu ai nevoie de:
-
-- GPU pentru try-on
-- CatVTON
-- weights locale
-- Hugging Face cache pentru MVP-ul cu FASHN
-
-## Docker
-
-Repo-ul are acum:
-
-- `Dockerfile` -> varianta recomandată pentru `FASHN AI`
-- `Dockerfile.catvton` -> păstrat pentru viitor, dacă revii la CatVTON
-
-Pentru RunPod + FASHN folosește:
-
-- `Dockerfile`
-
-## Deploy pe RunPod Serverless
-
-Recomandat pentru MVP cu FASHN:
-
-1. `Serverless`
-2. `Create new deployment`
-3. `Custom deployment`
-4. `Deploy from GitHub`
-5. alegi repo-ul backend
-
-Setări recomandate:
-
-- endpoint type: `Load Balancer`
-- worker type: `CPU` dacă este disponibil
-- dacă nu ai CPU în acel flux, alege cel mai ieftin worker disponibil
-- active workers: `0`
-- max workers: `1`
-- port: `8000`
-- health port: `8000`
-
-La environment variables:
-
-- copiezi din `runpod.env.example`
-- schimbi `APP_PUBLIC_BASE_URL` cu URL-ul final
-- schimbi `DATABASE_URL`
-- pui `RESEND_API_KEY`
-- pui `FASHN_API_KEY`
-- pui `SECRET_KEY`
-
-## Ce verifici după deploy
-
-### 1. Health
-
-```bash
-curl -s https://URLUL-TAU/api/v1/health
-```
-
-Ar trebui să vezi ceva de genul:
-
-```json
-{
-  "status": "ok",
-  "tryon_provider": "fashn_api",
-  "tryon_ready": true,
-  "email_ready": true
-}
-```
-
-### 2. Ping
-
-```bash
-curl -i https://URLUL-TAU/ping
-```
-
-Trebuie să răspundă `200`.
-
-### 3. Signup
-
-- creezi cont
-- primești email
-- verifici contul
-- faci login
-
-### 4. Try-on
-
-- trimiți `person_image`
-- trimiți `upper_garment_image`
-- optional `lower_garment_image`
-- backend-ul creează job-ul și întoarce rezultatul
-
-## Endpoint-ul important pentru aplicație
-
-Din iOS, fluxul principal lovește:
-
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `GET /api/v1/me`
-- `PUT /api/v1/me/body-profile`
-- `POST /api/v1/stylist/recommend`
-- `POST /api/v1/fit/predict`
-- `POST /api/v1/tryon/jobs`
-- `GET /api/v1/tryon/jobs/{job_id}/result`
-
-## Notă despre warmup
-
-Pentru `FASHN AI`, `warmup` nu mai este necesar ca la CatVTON.
-
-Dar endpoint-urile:
-
-- `POST /api/v1/tryon/warmup`
-- `GET /api/v1/tryon/warmup`
-
-au fost păstrate și întorc `ready` pentru providerul `fashn_api`, ca aplicația să nu se rupă dacă deja folosește acel flow.
-
-## Ce mai rămâne pentru aplicația finală
-
-După deploy, mai ai de făcut:
-
-1. aplicația iOS să bată doar spre URL-ul backend-ului tău
-2. să scoatem din UI orice text de debug / server / MVP
-3. să salvăm istoricul probelor per user
-4. să legăm subscriptions
-5. să rafinăm UX-ul pentru timpii de așteptare și stările de rezultat
+Repo-ul include un fișier `LICENSE`. Dacă proiectul ajunge public mai larg, merită revizuită și partea de licențiere împreună cu branding-ul și politicile aplicației.
