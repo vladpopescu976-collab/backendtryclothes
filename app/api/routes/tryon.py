@@ -3,18 +3,19 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from httpx import HTTPStatusError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.tryon_job import TryOnJob
 from app.schemas.common import OperationPerformanceRead, TryOnJobRead, TryOnVideoJobRead, TryOnVideoRead
 from app.services.catvton_runtime import get_catvton_runtime_status, request_catvton_warmup
 from app.services.auth import get_current_user, get_or_create_guest_user
 from app.services.tryon import create_garment_asset, create_tryon_job, save_upload_file_with_metrics
+from app.services.tryon_routing import resolve_tryon_routing
 from app.services.video_jobs import owner_key_for_user, schedule_video_job, video_job_store
 from app.services.vton import InvalidTryOnImageError, generate_video_from_result_image_with_metrics, run_tryon_job_with_metrics
 
@@ -83,6 +84,7 @@ def get_warmup_status() -> dict:
 
 async def _create_job_for_user(
     *,
+    background_tasks: BackgroundTasks,
     db: Session,
     current_user,
     person_image: UploadFile,
@@ -181,36 +183,22 @@ async def _create_job_for_user(
 
     db.commit()
 
+    routing_metadata = _preview_job_routing_metadata(
+        upper_category_code=upper_category_code,
+        lower_category_code=lower_category_code,
+        generation_tier=generation_tier,
+    )
     job = create_tryon_job(db, current_user, person_path, upper_asset, lower_asset)
-    try:
-        job, runtime_performance, routing_metadata = run_tryon_job_with_metrics(
-            db,
-            job,
-            upper_category_code=upper_category_code,
-            lower_category_code=lower_category_code,
-            upper_garment_photo_type=upper_garment_photo_type,
-            lower_garment_photo_type=lower_garment_photo_type,
-            generation_tier=generation_tier,
-            user_selected_color=user_selected_color,
-        )
-    except InvalidTryOnImageError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except HTTPStatusError as exc:
-        response_text = exc.response.text[:1000] if exc.response is not None else ""
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"FASHN request failed with HTTP {exc.response.status_code if exc.response else 502}: {response_text}",
-        ) from exc
-    except TimeoutError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=str(exc),
-        ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+    background_tasks.add_task(
+        _run_tryon_job_background,
+        job.id,
+        upper_category_code,
+        lower_category_code,
+        upper_garment_photo_type,
+        lower_garment_photo_type,
+        generation_tier,
+        user_selected_color,
+    )
     total_ms = int((time.monotonic() - request_started) * 1000)
     performance = OperationPerformanceRead(
         upload_bytes=upload_bytes,
@@ -219,8 +207,6 @@ async def _create_job_for_user(
         read_ms=read_ms,
         decode_ms=decode_ms,
         write_ms=write_ms,
-        processing_ms=runtime_performance.processing_ms,
-        finalize_ms=runtime_performance.finalize_ms,
         response_ms=total_ms,
         total_ms=total_ms,
     )
@@ -231,7 +217,7 @@ async def _create_job_for_user(
         read_ms,
         decode_ms,
         write_ms,
-        runtime_performance.processing_ms,
+        None,
         total_ms,
     )
     payload = TryOnJobRead.model_validate(job)
@@ -249,6 +235,92 @@ async def _create_job_for_user(
             "fashn_job_id": routing_metadata.fashn_job_id if routing_metadata else None,
         }
     )
+
+
+def _preview_job_routing_metadata(
+    *,
+    upper_category_code: Optional[str],
+    lower_category_code: Optional[str],
+    generation_tier: Optional[str],
+) -> dict[str, object | None]:
+    category_codes = [
+        category_code.strip().lower()
+        for category_code in (upper_category_code, lower_category_code)
+        if category_code and category_code.strip()
+    ]
+    if not category_codes:
+        return {}
+
+    try:
+        decisions = [
+            resolve_tryon_routing(
+                user_category=category_code,
+                requested_generation_tier=generation_tier,
+            )
+            for category_code in category_codes
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    final_generation_tier = (
+        "premium"
+        if any(decision.final_generation_tier.value == "premium" for decision in decisions)
+        else "standard"
+    )
+    model_names = {decision.fashn_model_name for decision in decisions}
+    return {
+        "requested_generation_tier": decisions[0].requested_generation_tier.value,
+        "final_generation_tier": final_generation_tier,
+        "fashn_model_used": next(iter(model_names)) if len(model_names) == 1 else "multiple",
+        "credits_charged": sum(decision.credits_required for decision in decisions),
+        "openai_analysis_success": None,
+        "fallback_used": None,
+        "forced_premium": any(decision.force_premium for decision in decisions),
+        "premium_recommended": any(decision.premium_recommended for decision in decisions),
+        "fashn_job_id": None,
+    }
+
+
+def _run_tryon_job_background(
+    job_id: str,
+    upper_category_code: Optional[str],
+    lower_category_code: Optional[str],
+    upper_garment_photo_type: Optional[str],
+    lower_garment_photo_type: Optional[str],
+    generation_tier: Optional[str],
+    user_selected_color: Optional[str],
+) -> None:
+    db = SessionLocal()
+    try:
+        job = db.query(TryOnJob).filter(TryOnJob.id == job_id).first()
+        if not job:
+            logger.error("tryon-background job missing id=%s", job_id)
+            return
+
+        processed_job, runtime_performance, routing_metadata = run_tryon_job_with_metrics(
+            db,
+            job,
+            upper_category_code=upper_category_code,
+            lower_category_code=lower_category_code,
+            upper_garment_photo_type=upper_garment_photo_type,
+            lower_garment_photo_type=lower_garment_photo_type,
+            generation_tier=generation_tier,
+            user_selected_color=user_selected_color,
+        )
+        logger.info(
+            "tryon-background-complete job_id=%s status=%s processing_ms=%s finalize_ms=%s total_ms=%s final_generation_tier=%s fashn_model_used=%s",
+            processed_job.id,
+            processed_job.status,
+            runtime_performance.processing_ms,
+            runtime_performance.finalize_ms,
+            runtime_performance.total_ms,
+            routing_metadata.final_generation_tier if routing_metadata else None,
+            routing_metadata.fashn_model_used if routing_metadata else None,
+        )
+    except Exception:
+        logger.exception("tryon-background-failed job_id=%s", job_id)
+    finally:
+        db.close()
 
 
 async def _create_video_response(
@@ -323,6 +395,7 @@ async def _create_video_response(
 
 @router.post("/jobs", response_model=TryOnJobRead, status_code=status.HTTP_201_CREATED)
 async def create_job(
+    background_tasks: BackgroundTasks,
     person_image: UploadFile = File(...),
     upper_garment_image: Optional[UploadFile] = File(None),
     lower_garment_image: Optional[UploadFile] = File(None),
@@ -339,6 +412,7 @@ async def create_job(
     current_user=Depends(get_current_user),
 ) -> TryOnJobRead:
     return await _create_job_for_user(
+        background_tasks=background_tasks,
         db=db,
         current_user=current_user,
         person_image=person_image,
@@ -358,6 +432,7 @@ async def create_job(
 
 @router.post("/guest/jobs", response_model=TryOnJobRead, status_code=status.HTTP_201_CREATED)
 async def create_guest_job(
+    background_tasks: BackgroundTasks,
     person_image: UploadFile = File(...),
     upper_garment_image: Optional[UploadFile] = File(None),
     lower_garment_image: Optional[UploadFile] = File(None),
@@ -374,6 +449,7 @@ async def create_guest_job(
 ) -> TryOnJobRead:
     guest_user = get_or_create_guest_user(db)
     return await _create_job_for_user(
+        background_tasks=background_tasks,
         db=db,
         current_user=guest_user,
         person_image=person_image,

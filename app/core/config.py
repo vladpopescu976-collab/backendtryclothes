@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     AUTO_SEED_REFERENCE_DATA: bool = True
     TRYON_PROVIDER: str = "stub"
     TRYON_TIMEOUT_SECONDS: int = 180
-    TRYON_POLL_INTERVAL_SECONDS: int = 2
+    TRYON_POLL_INTERVAL_SECONDS: int = 1
     TRYON_NUM_INFERENCE_STEPS: int = 22
     TRYON_GUIDANCE_SCALE: float = 2.5
     TRYON_SEED: int = 42
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     DEBUG_FASHN_SEED: int | None = None
     FASHN_NUM_SAMPLES: int = 1
     FASHN_REQUEST_TEMPLATE_JSON: str = ""
-    FASHN_DEBUG_SAVE_REQUESTS: bool = True
+    FASHN_DEBUG_SAVE_REQUESTS: bool = False
 
     OPENAI_API_KEY: str = ""
     EXTERNAL_TRYON_API_URL: str = "https://example.com/virtual-tryon"

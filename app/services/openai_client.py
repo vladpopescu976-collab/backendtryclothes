@@ -24,6 +24,17 @@ def get_openai_api_key() -> str:
         api_key = api_key[1:-1].strip()
         logger.warning("OPENAI_DEBUG removed surrounding quotes from OPENAI_API_KEY")
 
+    if api_key.startswith("sk-proj "):
+        api_key = api_key.replace("sk-proj ", "sk-proj-", 1)
+        logger.warning("OPENAI_DEBUG repaired malformed sk-proj separator in OPENAI_API_KEY")
+    elif api_key.startswith("sk-proj") and not api_key.startswith("sk-proj-"):
+        api_key = api_key.replace("sk-proj", "sk-proj-", 1)
+        logger.warning("OPENAI_DEBUG inserted missing sk-proj hyphen in OPENAI_API_KEY")
+
+    if any(character.isspace() for character in api_key):
+        api_key = "".join(api_key.split())
+        logger.warning("OPENAI_DEBUG removed whitespace characters from OPENAI_API_KEY")
+
     has_internal_whitespace = any(character.isspace() for character in api_key)
     logger.info(
         "OPENAI_DEBUG key_present=%s key_length=%s source=%s has_internal_whitespace=%s",
